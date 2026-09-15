@@ -41,8 +41,14 @@ if ($svc -and $svc.Status -ne 'Running') {
         Write-Log 'service started'
     } else {
         Write-Log 'WARN could not start service without elevation - alerting user'
-        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $notify `
-            -Title 'Chrome Remote Desktop' -Message 'Host service is not running - open Agent Status or restart PC' | Out-Null
+        # headless child: must never flash a console window
+        $psi2 = New-Object System.Diagnostics.ProcessStartInfo
+        $psi2.FileName = 'powershell.exe'
+        $psi2.Arguments = ('-NoProfile -ExecutionPolicy Bypass -File "' + $notify + '" -Title "Chrome Remote Desktop" -Message "Host service is not running - open Agent Status or restart PC"')
+        $psi2.UseShellExecute = $false
+        $psi2.CreateNoWindow = $true
+        $psi2.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
+        try { [void][System.Diagnostics.Process]::Start($psi2) } catch { }
     }
 } else {
     Write-Log 'OK chromoting service running'

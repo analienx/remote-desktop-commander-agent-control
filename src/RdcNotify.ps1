@@ -1,5 +1,6 @@
-# Toast notification helper (called from guardian via Windows PowerShell 5.1,
-# which supports WinRT toasts). Fails silently to log if toasts unavailable.
+# Toast notification helper (called headless from guardian; see Invoke-RdcHidden).
+# Runs in Windows PowerShell 5.1, which supports WinRT toasts.
+# Fails silently to log if toasts unavailable.
 param(
     [string]$Title = 'RDC Agent',
     [string]$Message = 'Needs attention'

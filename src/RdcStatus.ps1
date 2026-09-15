@@ -125,6 +125,25 @@ function Add-Row([System.Windows.Controls.StackPanel]$panel, [string]$label, [st
     [void]$panel.Children.Add($sp)
 }
 
+# Shared headless child-process launcher (same fix as the guardian:
+# '& powershell.exe' can briefly flash a conhost/cmd window when called from
+# Task Scheduler, so children start explicitly hidden here).
+function Invoke-RdcHiddenUi {
+    param([string]$File, [string[]]$Arguments = @())
+    try {
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = $File
+        $psi.Arguments = ($Arguments -join ' ')
+        $psi.UseShellExecute = $false
+        $psi.CreateNoWindow = $true
+        $psi.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $p = [System.Diagnostics.Process]::Start($psi)
+        $p.WaitForExit(180000) | Out-Null
+    } catch { }
+}
+
 function Invoke-Refresh {
     $f = Get-AgentFacts
     foreach ($child in @($statusPanel.Children)) { $statusPanel.RemoveChild($child) }
@@ -172,11 +191,11 @@ New-Button 'Restart agent' {
         $c = (Get-CimInstance Win32_Process -Filter ("ProcessId = {0}" -f $_.Id)).CommandLine
         if ($c -match 'desktop-commander') { Stop-Process -Id $_.Id -Force }
     }
-    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'RdcAgentStart.ps1') | Out-Null
+    Invoke-RdcHiddenUi -File 'powershell.exe' -Arguments @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"' + (Join-Path $PSScriptRoot 'RdcAgentStart.ps1') + '"'))
     Start-Sleep -Seconds 5; Invoke-Refresh
 }
 New-Button 'Run guardian now' {
-    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'RdcGuardian.ps1') | Out-Null
+    Invoke-RdcHiddenUi -File 'powershell.exe' -Arguments @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"' + (Join-Path $PSScriptRoot 'RdcGuardian.ps1') + '"'))
     Invoke-Refresh
 }
 [void]$root.Children.Add($buttons)

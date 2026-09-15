@@ -63,9 +63,36 @@ function Try-Restart([string]$reason) {
         if ($c -match 'desktop-commander remote') { Stop-Process -Id $p.Id -Force }
     }
     Start-Sleep -Seconds 3
-    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $starter | Out-Null
+    Invoke-RdcHidden -File 'powershell.exe' -Arguments @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"' + $starter + '"')) | Out-Null
     $state.LastRestart = Get-Date
     return $true
+}
+
+# Shared headless child-process launcher.
+# Child powershell.exe invocations MUST NOT flash a console (conhost/cmd) window.
+# The '&' operator inherits the caller's window style, which is unreliable when
+# launched from Task Scheduler or from a non-console parent - so child processes
+# are started explicitly headless here (the fix for the random cmd-window pops).
+# Returns a small object: ExitCode / Output / Error.
+function Invoke-RdcHidden {
+    param([string]$File, [string[]]$Arguments = @())
+    try {
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = $File
+        $psi.Arguments = ($Arguments -join ' ')
+        $psi.UseShellExecute = $false
+        $psi.CreateNoWindow = $true
+        $psi.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $p = [System.Diagnostics.Process]::Start($psi)
+        $out = $p.StandardOutput.ReadToEnd()
+        $err = $p.StandardError.ReadToEnd()
+        $p.WaitForExit(180000) | Out-Null
+        return [pscustomobject]@{ ExitCode = $p.ExitCode; Output = $out; Error = $err }
+    } catch {
+        return [pscustomobject]@{ ExitCode = -1; Output = ''; Error = $_.Exception.Message }
+    }
 }
 
 # ---------- 1. environment ----------
@@ -103,7 +130,7 @@ if ($agents.Count -gt 1) {
 
 if ($agents.Count -eq 0) {
     Write-Log 'AGENT MISSING - starting'
-    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $starter | Out-Null
+    Invoke-RdcHidden -File 'powershell.exe' -Arguments @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"' + $starter + '"')) | Out-Null
     $state.LastRestart = Get-Date
     $deadline = (Get-Date).AddSeconds(90)
     while ((Get-Date) -lt $deadline) {
@@ -157,7 +184,7 @@ if ($pairingNeeded) {
         $state.ConsecutiveFailures++
         Save-State 'NEEDS-USER-VERIFICATION-RESTARTED'
         Write-Log 'NEEDS USER ACTION: pairing prompt - user must verify code in browser/console'
-        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $notify -Title 'RDC Agent' -Message 'Device verification needed - click the toast or open Agent Status' | Out-Null
+        Invoke-RdcHidden -File 'powershell.exe' -Arguments @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"' + $notify + '"'), '-Title', '"RDC Agent"', '-Message', '"Device verification needed - click the toast or open Agent Status"') | Out-Null
         exit 4
     }
     Save-State 'NEEDS-USER-VERIFICATION'
@@ -167,7 +194,7 @@ if ($pairingNeeded) {
 $state.ConsecutiveFailures++
 if ($state.ConsecutiveFailures -ge 3) {
     Write-Log ('UNRECOVERABLE after ' + $state.ConsecutiveFailures + ' failures - manual inspection needed')
-    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $notify -Title 'RDC Agent' -Message 'Automatic recovery failed - open Agent Status for details' | Out-Null
+    Invoke-RdcHidden -File 'powershell.exe' -Arguments @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"' + $notify + '"'), '-Title', '"RDC Agent"', '-Message', '"Automatic recovery failed - open Agent Status for details"') | Out-Null
     Save-State 'UNRECOVERABLE'; exit 5
 }
 if (Try-Restart ("agent connected but not ready (" + [math]::Round($uptimeMin,1) + " min uptime, log lacks Device ready)")) {
