@@ -38,6 +38,7 @@ logon. This toolset fixes all of that automatically.
 | **CRD watchdog** | `src/CrdWatchdog.ps1` | Guarantees the `chromoting` service runs and **exactly one** minimized Chrome Remote Desktop PWA window exists — never steals focus, never spawns duplicates |
 | **Dashboard** | `src/RdcStatus.ps1` | Dark-themed WPF control panel: live status, agent PID, relay connections, uptime, failure count, guardian log tail, one-click restart/heal |
 | **Notifier** | `src/RdcNotify.ps1` | Native Windows toast notifications for actions that genuinely need a human |
+| **Foundry v3 boundary** | `src/RdcFoundryV3.ps1` | RDC as transport/health boundary + bulk MCP consumer: cursor/paginated reads (projects, jobs, attempts, activity, approvals, artifacts/evidence, health) through the Interop gateway; writes only via named typed host operations. See `docs/FOUNDRY_V3_RDC.md` |
 
 ## Requirements
 
@@ -151,6 +152,19 @@ handles the rest.
 
 Issues and PRs welcome — the healing heuristics are deliberately conservative and
 well-commented so they're easy to tune for other environments.
+
+## Foundry v3 role
+
+Under the Foundry v3 redesign (issue #1; context: analienx/config#37,
+analienx/agent-foundry#2, analienx/agent-interop-gateway#6), RDC is a
+**transport/health boundary and bulk MCP consumer**: it reads projects, jobs,
+attempts, activity, approvals, artifacts/evidence and health through the
+Interop gateway with efficient cursor/paginated reads, and performs writes only
+through named typed host operations with explicit validation, idempotency keys
+and durable no-blind-replay receipts. RDC owns no model/account routing,
+scheduling, goal state,
+or Foundry job state. Implementation: `src/RdcFoundryV3.ps1`; contract and
+rollback notes: `docs/FOUNDRY_V3_RDC.md`; tests: `tests/RdcFoundryV3.Tests.ps1`.
 
 ## License
 

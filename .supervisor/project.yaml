@@ -1,0 +1,16 @@
+name: remote-desktop-commander-agent-control
+description: Self-healing keep-alive, watchdog and status dashboard for the Desktop Commander remote agent and Chrome Remote Desktop on Windows.
+execution:
+  default_mode: host_specialist
+  optional_modes: [recovery_only]
+  notes: RDC is a transport/health boundary and bulk MCP consumer under Foundry v3; typed host operations only, no scheduling or model routing.
+repository: analienx/remote-desktop-commander-agent-control
+contacts:
+  owner: analienx
+links:
+  issues:
+    - https://github.com/analienx/remote-desktop-commander-agent-control/issues/1
+  context:
+    - https://github.com/analienx/config/pull/37
+    - https://github.com/analienx/agent-foundry/pull/2
+    - https://github.com/analienx/agent-interop-gateway/pull/6
