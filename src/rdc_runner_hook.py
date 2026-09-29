@@ -12,6 +12,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import tempfile
 from typing import Any
@@ -29,7 +30,11 @@ RUNNER_TOKEN = Path(r"C:\ProgramData\Analienx\runner-client\client-token.txt")
 IMPORT_LINE = "import { enforceAnalienxRunnerRouting } from './analienx-runner-policy.js';"
 IMPORT_ANCHOR = "import { fileURLToPath } from 'url';"
 CALL_MARKER = "enforceAnalienxRunnerRouting(parsed.data);"
-CALL_ANCHOR = "    try {\n        const commands = commandManager.extractCommands(parsed.data.command).join(', ');"
+CALL_SIGNATURE = re.compile(
+    r"(?m)^(?P<indent>[ \\t]*)try[ \\t]*\\{[ \\t]*\\r?\\n"
+    r"(?P=indent)[ \\t]+const commands = commandManager\\.extractCommands"
+    r"\\(parsed\\.data\\.command\\)\\.join\\(', '\\);"
+)
 CALL_BLOCK = """    try {
         enforceAnalienxRunnerRouting(parsed.data);
     }
@@ -101,10 +106,14 @@ def _patched_source(original: str) -> str:
         return original
     if original.count(IMPORT_ANCHOR) != 1:
         raise HookError("Desktop Commander import anchor changed; review upstream before installing hook")
-    if original.count(CALL_ANCHOR) != 1:
-        raise HookError("Desktop Commander start_process anchor changed; review upstream before installing hook")
+    matches = list(CALL_SIGNATURE.finditer(original))
+    if len(matches) != 1:
+        raise HookError(
+            "Desktop Commander start_process signature changed or became ambiguous; review upstream before installing hook"
+        )
     updated = original.replace(IMPORT_ANCHOR, IMPORT_ANCHOR + "\n" + IMPORT_LINE, 1)
-    updated = updated.replace(CALL_ANCHOR, CALL_BLOCK + CALL_ANCHOR, 1)
+    match = matches[0]
+    updated = updated[:match.start()] + CALL_BLOCK + updated[match.start():]
     return updated
 
 
