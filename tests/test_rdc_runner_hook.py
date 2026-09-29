@@ -60,6 +60,9 @@ class HookTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_install_idempotence_and_exact_restore(self):
+        current = self.target.read_text(encoding="utf-8")
+        self.assertEqual(current.count(hook.IMPORT_ANCHOR), 1)
+        self.assertEqual(current.count(hook.CALL_ANCHOR), 1)
         first = hook.ensure()
         self.assertTrue(first["healthy"])
         self.assertTrue(first["changed"])
