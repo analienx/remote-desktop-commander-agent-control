@@ -169,3 +169,30 @@ rollback notes: `docs/FOUNDRY_V3_RDC.md`; tests: `tests/RdcFoundryV3.Tests.ps1`.
 ## License
 
 [MIT](LICENSE) © 2026 analienx
+
+
+## Mandatory Runner routing for RDC process execution
+
+RDC native read tools remain direct. Process execution does not.
+
+When the hardened Windows Analienx Runner client is installed, the Guardian
+ensures a fail-closed hook in Desktop Commander's `start_process` path.
+The only accepted process command is the fixed Python bridge with a UUID-named
+request under `C:\Workspace\.analienx\rdc-requests`.
+
+The request contains structured `cwd`, `argv`, project/category metadata and
+timeouts. `rdc_runner_bridge.py` never executes that argv itself. It submits a
+durable `workspace_exec` request to the loopback Windows Runner on
+`127.0.0.1:8765` with `origin: rdc`. The Runner independently validates the
+workspace path, executes argv without a shell, and records
+`received -> validating -> running -> succeeded/failed` events for the Control
+Center.
+
+If the Windows Runner is absent or unhealthy, execution fails closed. There is
+no direct-shell fallback. Before the Runner client exists, Guardian reports the
+hook as inactive and does not activate a route that has nowhere safe to go.
+
+The hook installer is `src/rdc_runner_hook.py`. It is signature-anchored,
+idempotent, keeps a hash-addressed pre-patch backup, verifies the installed
+policy module, and refuses destructive rollback after an unrelated upstream
+package change. This is deliberately separate from ordinary RDC read access.
