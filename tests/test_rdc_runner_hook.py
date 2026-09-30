@@ -48,7 +48,7 @@ class HookTests(unittest.TestCase):
             "STATE_FILE": self.state,
             "BACKUP_ROOT": self.backups,
             "REQUEST_ROOT": self.requests,
-            "RUNNER_TOKEN": self.runner_marker,
+            "SLRUNNER_ENTRY": self.runner_marker,
         }
         self.patchers = [mock.patch.object(hook, key, value) for key, value in values.items()]
         for patcher in self.patchers:

@@ -111,14 +111,13 @@ if (-not $netOk) {
 }
 
 # ---------- Runner routing boundary ----------
-# Once the hardened Windows Runner client exists, direct RDC start_process must
-# be routed through it. The actual patch/verification logic is Python-first;
-# this guardian only invokes the fixed installer and restarts the agent if the
-# package was changed so the new module is loaded.
-if (Test-Path -LiteralPath $runnerToken -PathType Leaf) {
+# Once the thin per-user SLRunner exists, every RDC start_process must enter it.
+# Native RDC reads remain direct. Guardian only keeps the tiny Desktop Commander
+# hook installed and restarts the remote agent when the package patch changes.
+if (Test-Path -LiteralPath $slRunner -PathType Leaf) {
     $python = Get-Command python.exe -ErrorAction SilentlyContinue
     if (-not $python -or -not (Test-Path -LiteralPath $runnerHook -PathType Leaf)) {
-        Write-Log 'RUNNER-HOOK-FAILED: Python hook installer missing while Windows Runner is active'
+        Write-Log 'RUNNER-HOOK-FAILED: Python hook installer missing while SLRunner is active'
         Save-State 'RUNNER-HOOK-FAILED'; exit 5
     }
     $hookResult = Invoke-RdcHidden -File $python.Source -Arguments @(('"' + $runnerHook + '"'), 'ensure')
@@ -127,14 +126,14 @@ if (Test-Path -LiteralPath $runnerToken -PathType Leaf) {
         Save-State 'RUNNER-HOOK-FAILED'; exit 5
     }
     if ($hookResult.Output -match '"changed"\s*:\s*true') {
-        Write-Log 'RUNNER-HOOK-UPDATED: restarting RDC agent so mandatory routing takes effect'
-        if (Try-Restart 'mandatory Runner routing hook installed or updated') {
+        Write-Log 'RUNNER-HOOK-UPDATED: restarting RDC agent so mandatory SLRunner routing takes effect'
+        if (Try-Restart 'mandatory SLRunner routing hook installed or updated') {
             Save-State 'RUNNER-HOOK-RESTARTED'; exit 2
         }
         Save-State 'RUNNER-HOOK-UPDATED-RESTART-DEFERRED'; exit 2
     }
 } else {
-    Write-Log 'RUNNER-HOOK-INACTIVE: hardened Windows Runner client is not installed yet'
+    Write-Log 'RUNNER-HOOK-INACTIVE: thin SLRunner is not installed yet'
 }
 
 # ---------- 2. process (dedup + presence) ----------

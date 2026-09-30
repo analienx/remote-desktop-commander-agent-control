@@ -25,15 +25,15 @@ POLICY_SOURCE = Path(__file__).resolve().with_name("analienx-runner-policy.js")
 STATE_FILE = CONTROL_ROOT / "rdc-runner-hook-state.json"
 BACKUP_ROOT = CONTROL_ROOT / "backups"
 REQUEST_ROOT = Path(r"C:\Workspace\.analienx\rdc-requests")
-RUNNER_TOKEN = Path(r"C:\ProgramData\Analienx\runner-client\client-token.txt")
+SLRUNNER_ENTRY = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "Analienx" / "SLRunner" / "slrunner.py"
 
 IMPORT_LINE = "import { enforceAnalienxRunnerRouting } from './analienx-runner-policy.js';"
 IMPORT_ANCHOR = "import { fileURLToPath } from 'url';"
 CALL_MARKER = "enforceAnalienxRunnerRouting(parsed.data);"
 CALL_SIGNATURE = re.compile(
-    r"(?m)^(?P<indent>[ \\t]*)try[ \\t]*\\{[ \\t]*\\r?\\n"
-    r"(?P=indent)[ \\t]+const commands = commandManager\\.extractCommands"
-    r"\\(parsed\\.data\\.command\\)\\.join\\(', '\\);"
+    r"(?m)^(?P<indent>[ \t]*)try[ \t]*\{[ \t]*\r?\n"
+    r"(?P=indent)[ \t]+const commands = commandManager\.extractCommands"
+    r"\(parsed\.data\.command\)\.join\(', '\);"
 )
 CALL_BLOCK = """    try {
         enforceAnalienxRunnerRouting(parsed.data);
@@ -127,19 +127,20 @@ def status() -> dict[str, Any]:
     policy_matches = False
     if policy_exists and source_exists:
         policy_matches = POLICY_TARGET.read_bytes() == POLICY_SOURCE.read_bytes()
-    runner_ready = RUNNER_TOKEN.is_file()
+    slrunner_ready = SLRUNNER_ENTRY.is_file()
     healthy = (
         target_exists
         and policy_exists
         and import_present
         and call_present
         and policy_matches
-        and runner_ready
+        and slrunner_ready
     )
     return {
         "schema": "analienx.rdc-runner-hook/v1",
         "healthy": healthy,
-        "runner_ready": runner_ready,
+        "slrunner_ready": slrunner_ready,
+        "slrunner_entry": str(SLRUNNER_ENTRY),
         "desktop_commander_version": _package_version(),
         "target": str(TARGET),
         "target_exists": target_exists,
@@ -152,9 +153,9 @@ def status() -> dict[str, Any]:
 
 
 def ensure() -> dict[str, Any]:
-    if not RUNNER_TOKEN.is_file():
+    if not SLRUNNER_ENTRY.is_file():
         raise HookError(
-            "hardened Windows Runner client is not installed; refusing to activate mandatory RDC process routing"
+            "thin SLRunner is not installed; refusing to activate mandatory RDC process routing"
         )
     if not TARGET.is_file():
         raise HookError(f"Desktop Commander start_process implementation is missing: {TARGET}")
