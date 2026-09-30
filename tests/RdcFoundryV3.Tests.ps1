@@ -239,6 +239,13 @@ Describe 'RDC regression: existing behavior preserved' {
         $g | Should Match 'NETWORK-DOWN'
     }
 
+    It 'guardian gates process routing on thin SLRunner, not the legacy runner token' {
+        $g = Get-Content (Join-Path $srcDir 'RdcGuardian.ps1') -Raw
+        $g | Should Match '\$slRunner\s*='
+        $g | Should Match 'Analienx\\SLRunner\\slrunner\.py'
+        $g | Should Not Match 'runner-client\\client-token'
+    }
+
     It 'watchdog one-window and rate-limit semantics are untouched' {
         $w = Get-Content (Join-Path $srcDir 'CrdWatchdog.ps1') -Raw
         $w | Should Match 'MainWindowTitle'
