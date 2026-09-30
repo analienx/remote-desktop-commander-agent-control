@@ -13,6 +13,7 @@ function fixture() {
   const workspace = path.join(root, 'Workspace');
   const requests = path.join(workspace, '.analienx', 'rdc-requests');
   const bridge = path.join(root, 'RDC-Control', 'rdc_runner_bridge.py');
+  const initiatives = path.join(workspace, '.analienx', 'runner', 'initiatives.json');
   fs.mkdirSync(path.dirname(bridge), { recursive: true });
   fs.mkdirSync(workspace, { recursive: true });
   fs.writeFileSync(bridge, '# fixture\n');
@@ -20,12 +21,14 @@ function fixture() {
     workspace: process.env.ANALIENX_RDC_WORKSPACE_ROOT,
     requests: process.env.ANALIENX_RDC_REQUEST_ROOT,
     bridge: process.env.ANALIENX_RDC_BRIDGE,
+    initiatives: process.env.ANALIENX_RDC_INITIATIVE_REGISTRY,
   };
   process.env.ANALIENX_RDC_WORKSPACE_ROOT = workspace;
   process.env.ANALIENX_RDC_REQUEST_ROOT = requests;
   process.env.ANALIENX_RDC_BRIDGE = bridge;
+  process.env.ANALIENX_RDC_INITIATIVE_REGISTRY = initiatives;
   return {
-    root, workspace, requests, bridge,
+    root, workspace, requests, bridge, initiatives,
     close() {
       if (prior.workspace === undefined) delete process.env.ANALIENX_RDC_WORKSPACE_ROOT;
       else process.env.ANALIENX_RDC_WORKSPACE_ROOT = prior.workspace;
@@ -33,6 +36,8 @@ function fixture() {
       else process.env.ANALIENX_RDC_REQUEST_ROOT = prior.requests;
       if (prior.bridge === undefined) delete process.env.ANALIENX_RDC_BRIDGE;
       else process.env.ANALIENX_RDC_BRIDGE = prior.bridge;
+      if (prior.initiatives === undefined) delete process.env.ANALIENX_RDC_INITIATIVE_REGISTRY;
+      else process.env.ANALIENX_RDC_INITIATIVE_REGISTRY = prior.initiatives;
       fs.rmSync(root, { recursive: true, force: true });
     },
   };
@@ -53,6 +58,8 @@ test('ordinary process command is transparently routed', async () => {
     assert.equal(request.shell, 'cmd.exe');
     assert.equal(request.cwd, f.workspace);
     assert.equal(request.timeout_seconds, 86400);
+    assert.match(request.initiative_id, /^unclassified-/);
+    assert.equal(request.category, 'RDC-UNCLASSIFIED');
   } finally {
     f.close();
   }
@@ -63,11 +70,20 @@ test('leading cmd cd /d becomes runner cwd instead of wrapper logic', async () =
   try {
     const repo = path.join(f.workspace, 'worktrees', 'cinema-feral');
     fs.mkdirSync(repo, { recursive: true });
+    fs.mkdirSync(path.dirname(f.initiatives), { recursive: true });
+    fs.writeFileSync(f.initiatives, JSON.stringify({
+      schema: 1,
+      bindings: [{ root: repo, initiative_id: 'feral-60s-trailer', project: 'cinema', stream: 'autonomous-production' }],
+    }, null, 2));
     const command = 'cd /d "' + repo + '" && node tool.mjs --check';
     const routed = await routeAnalienxRunner({ command, shell: 'cmd.exe' }, 'cmd.exe');
     const request = JSON.parse(fs.readFileSync(routed.requestPath, 'utf8'));
     assert.equal(path.win32.normalize(request.cwd), path.win32.normalize(repo));
     assert.equal(request.command, 'node tool.mjs --check');
+    assert.equal(request.initiative_id, 'feral-60s-trailer');
+    assert.equal(request.project, 'cinema');
+    assert.equal(request.stream, 'autonomous-production');
+    assert.equal(request.category, 'RDC');
   } finally {
     f.close();
   }

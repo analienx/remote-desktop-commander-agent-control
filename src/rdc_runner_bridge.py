@@ -51,7 +51,8 @@ def _load_request(path: Path) -> dict:
         raise BridgeError("request JSON must be an object")
     allowed = {
         "schema", "cwd", "command", "argv", "shell", "project", "stream", "category",
-        "repository", "worktree", "label", "timeout_seconds", "heartbeat_seconds",
+        "initiative_id", "activity_type", "repository", "worktree", "label",
+        "timeout_seconds", "heartbeat_seconds",
     }
     unknown = set(payload) - allowed
     if unknown:
@@ -93,6 +94,10 @@ def _load_request(path: Path) -> dict:
     if not isinstance(heartbeat, int) or not 5 <= heartbeat <= 300:
         raise BridgeError("heartbeat_seconds must be 5..300")
 
+    initiative_id = bounded("initiative_id", None, 120)
+    if not initiative_id:
+        raise BridgeError("initiative_id is required for RDC execution")
+    activity_type = bounded("activity_type", "rdc-command", 120)
     project = bounded("project", None, 120)
     category = bounded("category", "RDC", 64)
     repository = bounded("repository", None, 160)
@@ -108,6 +113,8 @@ def _load_request(path: Path) -> dict:
         "command": command,
         "argv": argv,
         "shell": shell,
+        "initiative_id": initiative_id,
+        "activity_type": activity_type,
         "project": project,
         "stream": stream,
         "category": category,
@@ -137,7 +144,9 @@ def execute(request_file: Path) -> int:
         print(json.dumps({
             "event": "RDC_SLRUNNER_START",
             "job_id": request["job_id"],
+            "initiative_id": request.get("initiative_id"),
             "project": request.get("project"),
+            "activity_type": request.get("activity_type"),
             "category": request.get("category"),
         }, ensure_ascii=False), flush=True)
         # No stdio redirection: RDC interaction is transparently forwarded through

@@ -43,6 +43,8 @@ class BridgeTests(unittest.TestCase):
             "cwd": str(self.cwd),
             "command": "node tool.mjs --check",
             "shell": "cmd.exe",
+            "initiative_id": "feral-60s-trailer",
+            "activity_type": "keyframe-generation",
             "project": "cinema",
             "stream": "feral",
             "category": "FERAL",
@@ -69,6 +71,8 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(code, 7)
         self.assertEqual(observed["argv"][:2], [bridge.sys.executable, str(self.runner)])
         self.assertEqual(observed["request"]["origin"], "rdc")
+        self.assertEqual(observed["request"]["initiative_id"], "feral-60s-trailer")
+        self.assertEqual(observed["request"]["activity_type"], "keyframe-generation")
         self.assertEqual(observed["request"]["project"], "cinema")
         self.assertEqual(observed["request"]["command"], "node tool.mjs --check")
 
@@ -83,6 +87,10 @@ class BridgeTests(unittest.TestCase):
         req = bridge._load_request(self.request(command=None, argv=["python", "tool.py"]))
         self.assertEqual(req["argv"], ["python", "tool.py"])
         self.assertIsNone(req["command"])
+
+    def test_missing_initiative_is_rejected(self):
+        with self.assertRaisesRegex(bridge.BridgeError, "initiative_id"):
+            bridge._load_request(self.request(initiative_id=None))
 
     def test_request_outside_fixed_root_is_rejected(self):
         outside = self.workspace / "outside.json"

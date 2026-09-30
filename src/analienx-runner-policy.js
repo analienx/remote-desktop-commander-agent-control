@@ -16,6 +16,11 @@ function bridgePath() {
     path.win32.join(process.env.LOCALAPPDATA || '', 'RDC-Control', 'rdc_runner_bridge.py');
 }
 
+function initiativeRegistryPath() {
+  return process.env.ANALIENX_RDC_INITIATIVE_REGISTRY ||
+    path.win32.join(workspaceRoot(), '.analienx', 'runner', 'initiatives.json');
+}
+
 const INTERNAL_BRIDGE_RE = /rdc_runner_bridge\.py/i;
 
 function insideWorkspace(candidate) {
@@ -40,6 +45,42 @@ export function splitCmdWorkingDirectory(command, shell) {
   return { cwd: path.win32.resolve(cwd), command: match[3] };
 }
 
+function resolveInitiativeContext(cwd) {
+  const registry = initiativeRegistryPath();
+  if (fs.existsSync(registry)) {
+    try {
+      const payload = JSON.parse(fs.readFileSync(registry, 'utf8'));
+      if (payload?.schema === 1 && Array.isArray(payload.bindings)) {
+        const value = path.win32.resolve(cwd).toLowerCase();
+        const matches = payload.bindings
+          .filter((item) => item && typeof item.root === 'string' && typeof item.initiative_id === 'string')
+          .map((item) => ({ item, root: path.win32.resolve(item.root).toLowerCase() }))
+          .filter(({ root }) => value === root || value.startsWith(root + '\\'))
+          .sort((a, b) => b.root.length - a.root.length);
+        if (matches.length > 0) {
+          return {
+            initiative_id: matches[0].item.initiative_id,
+            project: matches[0].item.project || null,
+            stream: matches[0].item.stream || null,
+            classified: true,
+          };
+        }
+      }
+    } catch {
+      // Invalid registry must not be silently trusted. Fall through to a visible
+      // unclassified bucket; the Runner UI makes this obvious to the operator.
+    }
+  }
+  const leaf = path.win32.basename(path.win32.resolve(cwd)) || 'workspace';
+  const slug = leaf.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'workspace';
+  return {
+    initiative_id: ('unclassified-' + slug).slice(0, 120),
+    project: null,
+    stream: null,
+    classified: false,
+  };
+}
+
 const DEFAULT_JOB_TIMEOUT_SECONDS = 86400;
 
 export async function routeAnalienxRunner(args, resolvedShell) {
@@ -57,6 +98,7 @@ export async function routeAnalienxRunner(args, resolvedShell) {
   }
   const originalShell = String(resolvedShell || args?.shell || process.env.COMSPEC || 'cmd.exe');
   const split = splitCmdWorkingDirectory(original, originalShell);
+  const initiative = resolveInitiativeContext(split.cwd);
   const root = requestRoot();
   fs.mkdirSync(root, { recursive: true });
   const requestPath = path.win32.join(root, crypto.randomUUID() + '.json');
@@ -65,7 +107,11 @@ export async function routeAnalienxRunner(args, resolvedShell) {
     cwd: split.cwd,
     command: split.command,
     shell: originalShell,
-    category: 'RDC',
+    initiative_id: initiative.initiative_id,
+    activity_type: 'rdc-command',
+    project: initiative.project,
+    stream: initiative.stream,
+    category: initiative.classified ? 'RDC' : 'RDC-UNCLASSIFIED',
     // Desktop Commander's timeout_ms controls how long start_process waits for
     // initial output; it is not a child-process lifetime. Keep Runner lifetime
     // independent so interactive and durable jobs survive the initial tool return.
