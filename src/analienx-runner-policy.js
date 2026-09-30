@@ -21,7 +21,7 @@ function initiativeRegistryPath() {
     path.win32.join(workspaceRoot(), '.analienx', 'runner', 'initiatives.json');
 }
 
-const INTERNAL_BRIDGE_RE = /rdc_runner_bridge\.py/i;
+const INTERNAL_BRIDGE_RE = /(?:^|&&|\|\||[;&|])\s*"?(?:python(?:\.exe)?|py(?:\.exe)?)"?\s+[^&|;\r\n]*rdc_runner_bridge\.py/i;
 
 function insideWorkspace(candidate) {
   const root = path.win32.resolve(workspaceRoot()).toLowerCase();

@@ -104,6 +104,19 @@ test('resolved PowerShell shell is preserved inside the request', async () => {
   }
 });
 
+test('bridge filename may be mentioned by benign git commands', async () => {
+  const f = fixture();
+  try {
+    const routed = await routeAnalienxRunner(
+      { command: 'git add src/rdc_runner_bridge.py', shell: 'cmd.exe' },
+      'cmd.exe',
+    );
+    assert.ok(fs.existsSync(routed.requestPath));
+  } finally {
+    f.close();
+  }
+});
+
 test('internal bridge cannot be manually nested', async () => {
   const f = fixture();
   try {
