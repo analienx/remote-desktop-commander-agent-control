@@ -19,8 +19,9 @@ function Step([string]$msg) { Write-Host ("==> " + $msg) -ForegroundColor Cyan }
 function Ok([string]$msg)   { Write-Host ("    " + $msg) -ForegroundColor Green }
 function Warn([string]$msg) { Write-Host ("    " + $msg) -ForegroundColor Yellow }
 
-if ($PSVersionTable.PSVersion.Major -lt 5 -or -not $IsWindows -and $PSVersionTable.PSVersion.Major -lt 6) { }
-if (-not ($env:OS -eq 'Windows_NT')) { throw 'This installer runs on Windows only.' }
+if ($PSVersionTable.PSVersion.Major -lt 5) { throw 'PowerShell 5.1+ is required.' }
+$isWindowsPlatform = ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT)
+if (-not $isWindowsPlatform) { throw 'This installer runs on Windows only.' }
 
 # ---- 1. node ----
 Step 'Checking Node.js'

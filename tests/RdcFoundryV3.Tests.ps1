@@ -251,4 +251,10 @@ Describe 'RDC regression: existing behavior preserved' {
         $i | Should Match 'RDC-Agent-Guardian'
         $i | Should Match 'CRD-Watchdog'
     }
+
+    It 'installer detects Windows without relying on the OS environment variable' {
+        $i = Get-Content (Join-Path (Split-Path -Parent $srcDir) 'install.ps1') -Raw
+        $i | Should Match '\[Environment\]::OSVersion\.Platform'
+        $i | Should Not Match '\$env:OS'
+    }
 }
