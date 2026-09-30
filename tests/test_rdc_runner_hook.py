@@ -27,7 +27,7 @@ class HookTests(unittest.TestCase):
         self.control.mkdir(parents=True)
         self.runner_marker.write_text("ready", encoding="ascii")
         (self.dc_root / "package.json").write_text('{"version":"0.2.51"}', encoding="utf-8")
-        self.policy_source.write_text("export function enforceAnalienxRunnerRouting() {}\n", encoding="utf-8")
+        self.policy_source.write_text("export async function routeAnalienxRunner() { return {command: 'x', shell: 'cmd.exe'}; }\n", encoding="utf-8")
         self.original = (
             "import { fileURLToPath } from 'url';\n"
             "export async function startProcess(args) {\n"
@@ -36,6 +36,8 @@ class HookTests(unittest.TestCase):
             "    try {\n"
             "        const commands = commandManager.extractCommands(parsed.data.command).join(', ');\n"
             "    } catch (error) {}\n"
+            "    const isAllowed = await commandManager.validateCommand(parsed.data.command);\n"
+            "    if (!isAllowed) { return { isError: true }; }\n"
             "}\n"
         )
         self.target.write_text(self.original, encoding="utf-8")
@@ -62,13 +64,15 @@ class HookTests(unittest.TestCase):
     def test_install_idempotence_and_exact_restore(self):
         current = self.target.read_text(encoding="utf-8")
         self.assertEqual(current.count(hook.IMPORT_ANCHOR), 1)
-        self.assertEqual(current.count("const commands = commandManager.extractCommands(parsed.data.command).join(\', \');"), 1)
+        self.assertEqual(current.count("const isAllowed = await commandManager.validateCommand(parsed.data.command);"), 1)
         first = hook.ensure()
         self.assertTrue(first["healthy"])
         self.assertTrue(first["changed"])
         patched = self.target.read_text(encoding="utf-8")
         self.assertIn(hook.IMPORT_LINE, patched)
         self.assertIn(hook.CALL_MARKER, patched)
+        self.assertIn("parsed.data.command = routed.command;", patched)
+        self.assertLess(patched.index(hook.CALL_MARKER), patched.index("const isAllowed = await commandManager.validateCommand(parsed.data.command);"))
         second = hook.ensure()
         self.assertFalse(second["changed"])
         hook.uninstall()

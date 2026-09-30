@@ -147,6 +147,7 @@ def execute(request_file: Path) -> int:
         ])
     finally:
         translated.unlink(missing_ok=True)
+        request_file.unlink(missing_ok=True)
 
 
 def main(argv: list[str] | None = None) -> int:

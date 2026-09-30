@@ -171,28 +171,30 @@ rollback notes: `docs/FOUNDRY_V3_RDC.md`; tests: `tests/RdcFoundryV3.Tests.ps1`.
 [MIT](LICENSE) © 2026 analienx
 
 
-## Mandatory Runner routing for RDC process execution
+## Mandatory SLRunner routing for RDC process execution
 
-RDC native read tools remain direct. Process execution does not.
+RDC native read tools remain direct. Every `start_process` call is transparently
+routed through the thin per-user SLRunner once it is installed.
 
-When the hardened Windows Analienx Runner client is installed, the Guardian
-ensures a fail-closed hook in Desktop Commander's `start_process` path.
-The only accepted process command is the fixed Python bridge with a UUID-named
-request under `C:\Workspace\.analienx\rdc-requests`.
+The caller does not construct a wrapper command. The Desktop Commander hook preserves
+the original command, shell and timeout, extracts a leading `cmd.exe`
+`cd /d <workspace> && ...` into the Runner cwd when present, writes one UUID request
+under `C:\Workspace\.analienx\rdc-requests`, and rewrites only the internal
+execution to the fixed Python bridge. The bridge then invokes the installed
+`%LOCALAPPDATA%\Analienx\SLRunner\slrunner.py` with inherited stdin/stdout/stderr.
 
-The request contains structured `cwd`, `argv`, project/category metadata and
-timeouts. `rdc_runner_bridge.py` never executes that argv itself. It submits a
-durable `workspace_exec` request to the loopback Windows Runner on
-`127.0.0.1:8765` with `origin: rdc`. The Runner independently validates the
-workspace path, executes argv without a shell, and records
-`received -> validating -> running -> succeeded/failed` events for the Control
-Center.
+There is no loopback Runner service, bearer token, second scheduler, mutation broker,
+or approval engine in this path. SLRunner owns only process lifetime, catastrophic
+accident guard, heartbeat, logs and structured events. Project-specific safety stays
+inside the project scripts; untrusted execution belongs in Foundry.
 
-If the Windows Runner is absent or unhealthy, execution fails closed. There is
-no direct-shell fallback. Before the Runner client exists, Guardian reports the
-hook as inactive and does not activate a route that has nowhere safe to go.
+The hook is inserted before Desktop Commander's command validation, so its existing
+blocklist sees only the fixed bridge rather than accidentally matching words inside
+ordinary project commands. The `node:local` special execution path therefore cannot
+bypass SLRunner.
 
-The hook installer is `src/rdc_runner_hook.py`. It is signature-anchored,
-idempotent, keeps a hash-addressed pre-patch backup, verifies the installed
-policy module, and refuses destructive rollback after an unrelated upstream
-package change. This is deliberately separate from ordinary RDC read access.
+If SLRunner or the bridge is absent, process execution fails closed. The Guardian keeps
+the signature-anchored hook installed, restarts the RDC agent only when the patch
+changes, and leaves native read operations untouched. The installer retains a
+content-addressed pre-patch backup and refuses destructive rollback after an unrelated
+upstream package change.

@@ -27,16 +27,30 @@ BACKUP_ROOT = CONTROL_ROOT / "backups"
 REQUEST_ROOT = Path(r"C:\Workspace\.analienx\rdc-requests")
 SLRUNNER_ENTRY = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "Analienx" / "SLRunner" / "slrunner.py"
 
-IMPORT_LINE = "import { enforceAnalienxRunnerRouting } from './analienx-runner-policy.js';"
+IMPORT_LINE = "import { routeAnalienxRunner } from './analienx-runner-policy.js';"
 IMPORT_ANCHOR = "import { fileURLToPath } from 'url';"
-CALL_MARKER = "enforceAnalienxRunnerRouting(parsed.data);"
+CALL_MARKER = "const routed = await routeAnalienxRunner(parsed.data, runnerOriginalShell);"
 CALL_SIGNATURE = re.compile(
-    r"(?m)^(?P<indent>[ \t]*)try[ \t]*\{[ \t]*\r?\n"
-    r"(?P=indent)[ \t]+const commands = commandManager\.extractCommands"
-    r"\(parsed\.data\.command\)\.join\(', '\);"
+    r"(?m)^(?P<indent>[ \t]*)const isAllowed = await commandManager\.validateCommand"
+    r"\(parsed\.data\.command\);"
 )
 CALL_BLOCK = """    try {
-        enforceAnalienxRunnerRouting(parsed.data);
+        let runnerOriginalShell = parsed.data.shell;
+        if (!runnerOriginalShell) {
+            const runnerConfig = await configManager.getConfig();
+            if (runnerConfig.defaultShell) {
+                runnerOriginalShell = runnerConfig.defaultShell;
+            }
+            else {
+                const runnerIsWindows = os.platform() === 'win32';
+                runnerOriginalShell = runnerIsWindows
+                    ? (process.env.COMSPEC || 'cmd.exe')
+                    : (process.env.SHELL || '/bin/sh');
+            }
+        }
+        const routed = await routeAnalienxRunner(parsed.data, runnerOriginalShell);
+        parsed.data.command = routed.command;
+        parsed.data.shell = routed.shell;
     }
     catch (error) {
         capture('server_start_process_runner_required');
@@ -69,7 +83,7 @@ def _read_json(path: Path) -> dict[str, Any]:
     return value
 
 
-def _write_atomic(path: Path, data: bytes) -> None:
+def _write_atomic(path: Path, data: bytes, *, allow_locked_target_fallback: bool = False) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temp_name = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=str(path.parent))
     try:
@@ -77,7 +91,23 @@ def _write_atomic(path: Path, data: bytes) -> None:
             handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temp_name, path)
+        try:
+            os.replace(temp_name, path)
+        except PermissionError:
+            if not allow_locked_target_fallback or path != TARGET or not path.is_file():
+                raise
+            # A running Windows Node process may keep the loaded module open without
+            # FILE_SHARE_DELETE, which blocks rename/replace while still permitting
+            # ordinary writes. The caller has already created a content-addressed
+            # backup before enabling this narrow fallback.
+            with path.open("r+b") as handle:
+                handle.seek(0)
+                handle.write(data)
+                handle.truncate()
+                handle.flush()
+                os.fsync(handle.fileno())
+            if path.read_bytes() != data:
+                raise HookError("locked-target in-place write verification failed")
     finally:
         try:
             Path(temp_name).unlink(missing_ok=True)
@@ -112,7 +142,14 @@ def _patched_source(original: str) -> str:
             "Desktop Commander start_process signature changed or became ambiguous; review upstream before installing hook"
         )
     updated = original.replace(IMPORT_ANCHOR, IMPORT_ANCHOR + "\n" + IMPORT_LINE, 1)
-    match = matches[0]
+    # Import insertion changes source offsets. Re-resolve the unique call anchor
+    # against the updated source before inserting the routing block.
+    updated_matches = list(CALL_SIGNATURE.finditer(updated))
+    if len(updated_matches) != 1:
+        raise HookError(
+            "Desktop Commander start_process signature changed after import insertion"
+        )
+    match = updated_matches[0]
     updated = updated[:match.start()] + CALL_BLOCK + updated[match.start():]
     return updated
 
@@ -177,7 +214,7 @@ def ensure() -> dict[str, Any]:
         backup = BACKUP_ROOT / f"improved-process-tools.{original_sha}.js"
         if not backup.exists():
             _write_atomic(backup, original_bytes)
-        _write_atomic(TARGET, patched_text.encode("utf-8"))
+        _write_atomic(TARGET, patched_text.encode("utf-8"), allow_locked_target_fallback=True)
     else:
         state = _read_json(STATE_FILE) if STATE_FILE.is_file() else {}
         backup_raw = state.get("backup_path")
@@ -226,7 +263,7 @@ def uninstall() -> dict[str, Any]:
         raise HookError("Desktop Commander source changed since hook install; refusing destructive restore")
     if not backup.is_file():
         raise HookError(f"hook backup is missing: {backup}")
-    _write_atomic(TARGET, backup.read_bytes())
+    _write_atomic(TARGET, backup.read_bytes(), allow_locked_target_fallback=True)
     try:
         POLICY_TARGET.unlink(missing_ok=True)
     except OSError as exc:
