@@ -30,6 +30,88 @@ class BridgeError(RuntimeError):
     pass
 
 
+class BridgeJob:
+    """Own the SLRunner subtree so killing the RDC bridge cannot orphan execution."""
+    def __init__(self):
+        self.handle = None
+        self.kernel32 = None
+        if os.name != "nt":
+            return
+        import ctypes
+        from ctypes import wintypes
+
+        class BASIC(ctypes.Structure):
+            _fields_ = [
+                ("PerProcessUserTimeLimit", ctypes.c_longlong),
+                ("PerJobUserTimeLimit", ctypes.c_longlong),
+                ("LimitFlags", wintypes.DWORD),
+                ("MinimumWorkingSetSize", ctypes.c_size_t),
+                ("MaximumWorkingSetSize", ctypes.c_size_t),
+                ("ActiveProcessLimit", wintypes.DWORD),
+                ("Affinity", ctypes.c_size_t),
+                ("PriorityClass", wintypes.DWORD),
+                ("SchedulingClass", wintypes.DWORD),
+            ]
+
+        class IO(ctypes.Structure):
+            _fields_ = [
+                ("ReadOperationCount", ctypes.c_ulonglong),
+                ("WriteOperationCount", ctypes.c_ulonglong),
+                ("OtherOperationCount", ctypes.c_ulonglong),
+                ("ReadTransferCount", ctypes.c_ulonglong),
+                ("WriteTransferCount", ctypes.c_ulonglong),
+                ("OtherTransferCount", ctypes.c_ulonglong),
+            ]
+
+        class EXTENDED(ctypes.Structure):
+            _fields_ = [
+                ("BasicLimitInformation", BASIC),
+                ("IoInfo", IO),
+                ("ProcessMemoryLimit", ctypes.c_size_t),
+                ("JobMemoryLimit", ctypes.c_size_t),
+                ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                ("PeakJobMemoryUsed", ctypes.c_size_t),
+            ]
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+        kernel32.SetInformationJobObject.argtypes = [
+            wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+        kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+        kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        handle = kernel32.CreateJobObjectW(None, None)
+        if not handle:
+            raise BridgeError("cannot create RDC bridge Job Object")
+        info = EXTENDED()
+        info.BasicLimitInformation.LimitFlags = 0x00002000  # KILL_ON_JOB_CLOSE
+        if not kernel32.SetInformationJobObject(handle, 9, ctypes.byref(info), ctypes.sizeof(info)):
+            kernel32.CloseHandle(handle)
+            raise BridgeError("cannot configure RDC bridge Job Object")
+        self.handle = handle
+        self.kernel32 = kernel32
+
+    def assign(self, process: subprocess.Popen) -> None:
+        if os.name != "nt":
+            return
+        from ctypes import wintypes
+        if not self.handle or not self.kernel32 or not self.kernel32.AssignProcessToJobObject(
+            self.handle, wintypes.HANDLE(int(process._handle))
+        ):
+            raise BridgeError("cannot attach SLRunner to RDC bridge Job Object")
+
+    def close(self) -> None:
+        if self.handle and self.kernel32:
+            self.kernel32.CloseHandle(self.handle)
+            self.handle = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        self.close()
+
+
 def _contains(child: Path, parent: Path) -> bool:
     try:
         child.resolve(strict=True).relative_to(parent.resolve(strict=True))
@@ -150,10 +232,22 @@ def execute(request_file: Path) -> int:
             "category": request.get("category"),
         }, ensure_ascii=False), flush=True)
         # No stdio redirection: RDC interaction is transparently forwarded through
-        # bridge -> SLRunner -> project child.
-        return subprocess.call([
-            sys.executable, str(SLRUNNER_ENTRY), "--request", str(translated)
-        ])
+        # bridge -> SLRunner -> project child. The bridge owns the whole subtree via a
+        # KILL_ON_JOB_CLOSE Job Object so terminating the RDC session cannot orphan it.
+        with BridgeJob() as job:
+            process = subprocess.Popen([
+                sys.executable, str(SLRUNNER_ENTRY), "--request", str(translated)
+            ])
+            try:
+                job.assign(process)
+            except Exception:
+                try:
+                    process.kill()
+                    process.wait(timeout=5)
+                except (OSError, subprocess.SubprocessError):
+                    pass
+                raise
+            return int(process.wait())
     finally:
         translated.unlink(missing_ok=True)
         request_file.unlink(missing_ok=True)

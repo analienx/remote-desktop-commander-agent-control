@@ -61,20 +61,40 @@ class BridgeTests(unittest.TestCase):
     def test_valid_request_executes_installed_slrunner_and_preserves_exit(self):
         path = self.request()
         observed = {}
-        def fake_call(argv):
+        process = mock.Mock()
+        process.wait.return_value = 7
+        def fake_popen(argv):
             translated = Path(argv[-1])
             observed["argv"] = argv
             observed["request"] = json.loads(translated.read_text(encoding="utf-8"))
-            return 7
-        with mock.patch.object(bridge.subprocess, "call", side_effect=fake_call):
+            return process
+        job = mock.Mock()
+        job.__enter__ = mock.Mock(return_value=job)
+        job.__exit__ = mock.Mock(return_value=False)
+        with mock.patch.object(bridge.subprocess, "Popen", side_effect=fake_popen), \
+             mock.patch.object(bridge, "BridgeJob", return_value=job):
             code = bridge.execute(path)
         self.assertEqual(code, 7)
+        job.assign.assert_called_once_with(process)
         self.assertEqual(observed["argv"][:2], [bridge.sys.executable, str(self.runner)])
         self.assertEqual(observed["request"]["origin"], "rdc")
         self.assertEqual(observed["request"]["initiative_id"], "feral-60s-trailer")
         self.assertEqual(observed["request"]["activity_type"], "keyframe-generation")
         self.assertEqual(observed["request"]["project"], "cinema")
         self.assertEqual(observed["request"]["command"], "node tool.mjs --check")
+
+    def test_bridge_job_assignment_failure_kills_slrunner(self):
+        process = mock.Mock()
+        process.wait.return_value = -9
+        job = mock.Mock()
+        job.__enter__ = mock.Mock(return_value=job)
+        job.__exit__ = mock.Mock(return_value=False)
+        job.assign.side_effect = bridge.BridgeError("cannot attach")
+        with mock.patch.object(bridge.subprocess, "Popen", return_value=process), \
+             mock.patch.object(bridge, "BridgeJob", return_value=job):
+            with self.assertRaisesRegex(bridge.BridgeError, "cannot attach"):
+                bridge.execute(self.request())
+        process.kill.assert_called_once()
 
     def test_shell_commands_are_allowed_and_delegated_to_slrunner_guard(self):
         req = bridge._load_request(self.request(
