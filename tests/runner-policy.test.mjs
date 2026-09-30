@@ -73,7 +73,7 @@ test('leading cmd cd /d becomes runner cwd instead of wrapper logic', async () =
     fs.mkdirSync(path.dirname(f.initiatives), { recursive: true });
     fs.writeFileSync(f.initiatives, JSON.stringify({
       schema: 1,
-      bindings: [{ root: repo, initiative_id: 'feral-60s-trailer', project: 'cinema', stream: 'autonomous-production' }],
+      bindings: [{ root: repo, initiative_id: 'feral-60s-trailer', project: 'cinema', stream: 'autonomous-production', activity_type: 'keyframe-generation' }],
     }, null, 2));
     const command = 'cd /d "' + repo + '" && node tool.mjs --check';
     const routed = await routeAnalienxRunner({ command, shell: 'cmd.exe' }, 'cmd.exe');
@@ -83,7 +83,49 @@ test('leading cmd cd /d becomes runner cwd instead of wrapper logic', async () =
     assert.equal(request.initiative_id, 'feral-60s-trailer');
     assert.equal(request.project, 'cinema');
     assert.equal(request.stream, 'autonomous-production');
+    assert.equal(request.activity_type, 'keyframe-generation');
     assert.equal(request.category, 'RDC');
+  } finally {
+    f.close();
+  }
+});
+
+test('malformed or out-of-workspace initiative binding is ignored', async () => {
+  const f = fixture();
+  try {
+    const repo = path.join(f.workspace, 'worktrees', 'cinema-feral');
+    const outside = path.join(f.root, 'outside');
+    fs.mkdirSync(repo, { recursive: true });
+    fs.mkdirSync(outside, { recursive: true });
+    fs.mkdirSync(path.dirname(f.initiatives), { recursive: true });
+    fs.writeFileSync(f.initiatives, JSON.stringify({
+      schema: 1,
+      bindings: [
+        { root: repo, initiative_id: 'not valid spaces', project: 'cinema' },
+        { root: outside, initiative_id: 'outside-scope', project: 'cinema' },
+      ],
+    }, null, 2));
+    const command = 'cd /d "' + repo + '" && git status';
+    const routed = await routeAnalienxRunner({ command, shell: 'cmd.exe' }, 'cmd.exe');
+    const request = JSON.parse(fs.readFileSync(routed.requestPath, 'utf8'));
+    assert.match(request.initiative_id, /^unclassified-/);
+    assert.equal(request.category, 'RDC-UNCLASSIFIED');
+  } finally {
+    f.close();
+  }
+});
+
+test('stale request files are cleaned before routing', async () => {
+  const f = fixture();
+  try {
+    fs.mkdirSync(f.requests, { recursive: true });
+    const stale = path.join(f.requests, 'stale.json');
+    fs.writeFileSync(stale, '{}');
+    const old = new Date(Date.now() - 72 * 60 * 60 * 1000);
+    fs.utimesSync(stale, old, old);
+    const routed = await routeAnalienxRunner({ command: 'git status', shell: 'cmd.exe' }, 'cmd.exe');
+    assert.equal(fs.existsSync(stale), false);
+    assert.equal(fs.existsSync(routed.requestPath), true);
   } finally {
     f.close();
   }

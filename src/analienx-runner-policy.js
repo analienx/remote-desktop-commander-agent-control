@@ -22,6 +22,7 @@ function initiativeRegistryPath() {
 }
 
 const INTERNAL_BRIDGE_RE = /(?:^|&&|\|\||[;&|])\s*"?(?:python(?:\.exe)?|py(?:\.exe)?)"?\s+[^&|;\r\n]*rdc_runner_bridge\.py/i;
+const SAFE_INITIATIVE_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$/;
 
 function insideWorkspace(candidate) {
   const root = path.win32.resolve(workspaceRoot()).toLowerCase();
@@ -55,13 +56,21 @@ function resolveInitiativeContext(cwd) {
         const matches = payload.bindings
           .filter((item) => item && typeof item.root === 'string' && typeof item.initiative_id === 'string')
           .map((item) => ({ item, root: path.win32.resolve(item.root).toLowerCase() }))
-          .filter(({ root }) => value === root || value.startsWith(root + '\\'))
+          .filter(({ item, root }) =>
+            insideWorkspace(root) &&
+            fs.existsSync(item.root) &&
+            SAFE_INITIATIVE_RE.test(item.initiative_id) &&
+            (item.project == null || (typeof item.project === 'string' && item.project.length > 0 && item.project.length <= 160)) &&
+            (item.stream == null || (typeof item.stream === 'string' && item.stream.length > 0 && item.stream.length <= 160)) &&
+            (item.activity_type == null || (typeof item.activity_type === 'string' && item.activity_type.length > 0 && item.activity_type.length <= 120)) &&
+            (value === root || value.startsWith(root + '\\')))
           .sort((a, b) => b.root.length - a.root.length);
         if (matches.length > 0) {
           return {
             initiative_id: matches[0].item.initiative_id,
             project: matches[0].item.project || null,
             stream: matches[0].item.stream || null,
+            activity_type: matches[0].item.activity_type || 'rdc-command',
             classified: true,
           };
         }
@@ -77,11 +86,32 @@ function resolveInitiativeContext(cwd) {
     initiative_id: ('unclassified-' + slug).slice(0, 120),
     project: null,
     stream: null,
+    activity_type: 'rdc-command',
     classified: false,
   };
 }
 
 const DEFAULT_JOB_TIMEOUT_SECONDS = 86400;
+const STALE_REQUEST_MS = 48 * 60 * 60 * 1000;
+
+function cleanupStaleRequests(root) {
+  const now = Date.now();
+  try {
+    for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+      if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
+      const candidate = path.win32.join(root, entry.name);
+      try {
+        const stat = fs.statSync(candidate);
+        if (now - stat.mtimeMs > STALE_REQUEST_MS) fs.unlinkSync(candidate);
+      } catch {
+        // Best-effort hygiene only; request creation below remains fail-closed.
+      }
+    }
+  } catch {
+    // Directory read failure is surfaced later if the new request cannot be written.
+  }
+}
+
 
 export async function routeAnalienxRunner(args, resolvedShell) {
   const original = String(args?.command ?? '');
@@ -101,6 +131,7 @@ export async function routeAnalienxRunner(args, resolvedShell) {
   const initiative = resolveInitiativeContext(split.cwd);
   const root = requestRoot();
   fs.mkdirSync(root, { recursive: true });
+  cleanupStaleRequests(root);
   const requestPath = path.win32.join(root, crypto.randomUUID() + '.json');
   const payload = {
     schema: 'analienx.rdc-slrunner-request/v1',
@@ -108,7 +139,7 @@ export async function routeAnalienxRunner(args, resolvedShell) {
     command: split.command,
     shell: originalShell,
     initiative_id: initiative.initiative_id,
-    activity_type: 'rdc-command',
+    activity_type: initiative.activity_type,
     project: initiative.project,
     stream: initiative.stream,
     category: initiative.classified ? 'RDC' : 'RDC-UNCLASSIFIED',
