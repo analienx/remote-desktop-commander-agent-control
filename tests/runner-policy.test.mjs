@@ -52,7 +52,7 @@ test('ordinary process command is transparently routed', async () => {
     assert.equal(request.command, 'git status');
     assert.equal(request.shell, 'cmd.exe');
     assert.equal(request.cwd, f.workspace);
-    assert.equal(request.timeout_seconds, 12);
+    assert.equal(request.timeout_seconds, 86400);
   } finally {
     f.close();
   }

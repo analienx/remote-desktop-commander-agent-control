@@ -75,6 +75,14 @@ class HookTests(unittest.TestCase):
         self.assertLess(patched.index(hook.CALL_MARKER), patched.index("const isAllowed = await commandManager.validateCommand(parsed.data.command);"))
         second = hook.ensure()
         self.assertFalse(second["changed"])
+        self.policy_source.write_text(
+            "export async function routeAnalienxRunner() { return {command: 'updated', shell: 'cmd.exe'}; }\n",
+            encoding="utf-8",
+        )
+        policy_update = hook.ensure()
+        self.assertTrue(policy_update["changed"])
+        self.assertEqual(self.policy_target.read_bytes(), self.policy_source.read_bytes())
+        self.assertFalse(hook.ensure()["changed"])
         hook.uninstall()
         self.assertEqual(self.target.read_text(encoding="utf-8"), self.original)
 

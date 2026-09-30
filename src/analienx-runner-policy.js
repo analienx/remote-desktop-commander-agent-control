@@ -40,11 +40,7 @@ export function splitCmdWorkingDirectory(command, shell) {
   return { cwd: path.win32.resolve(cwd), command: match[3] };
 }
 
-function timeoutSeconds(value) {
-  const ms = Number(value);
-  if (!Number.isFinite(ms) || ms <= 0) return 300;
-  return Math.max(1, Math.min(86400, Math.ceil(ms / 1000)));
-}
+const DEFAULT_JOB_TIMEOUT_SECONDS = 86400;
 
 export async function routeAnalienxRunner(args, resolvedShell) {
   const original = String(args?.command ?? '');
@@ -70,7 +66,10 @@ export async function routeAnalienxRunner(args, resolvedShell) {
     command: split.command,
     shell: originalShell,
     category: 'RDC',
-    timeout_seconds: timeoutSeconds(args?.timeout_ms),
+    // Desktop Commander's timeout_ms controls how long start_process waits for
+    // initial output; it is not a child-process lifetime. Keep Runner lifetime
+    // independent so interactive and durable jobs survive the initial tool return.
+    timeout_seconds: DEFAULT_JOB_TIMEOUT_SECONDS,
     heartbeat_seconds: 15,
   };
   fs.writeFileSync(requestPath, JSON.stringify(payload, null, 2) + '\n', {

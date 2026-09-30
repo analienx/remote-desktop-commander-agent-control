@@ -207,10 +207,14 @@ def ensure() -> dict[str, Any]:
     original_text = original_bytes.decode("utf-8")
     original_sha = _sha_bytes(original_bytes)
     patched_text = _patched_source(original_text)
-    changed = patched_text != original_text
+    source_changed = patched_text != original_text
+    policy_bytes = POLICY_SOURCE.read_bytes()
+    policy_changed = (not POLICY_TARGET.is_file()
+                      or POLICY_TARGET.read_bytes() != policy_bytes)
+    changed = source_changed or policy_changed
 
     backup: Path | None = None
-    if changed:
+    if source_changed:
         backup = BACKUP_ROOT / f"improved-process-tools.{original_sha}.js"
         if not backup.exists():
             _write_atomic(backup, original_bytes)
@@ -220,7 +224,7 @@ def ensure() -> dict[str, Any]:
         backup_raw = state.get("backup_path")
         backup = Path(backup_raw) if isinstance(backup_raw, str) and backup_raw else None
 
-    _write_atomic(POLICY_TARGET, POLICY_SOURCE.read_bytes())
+    _write_atomic(POLICY_TARGET, policy_bytes)
     patched_bytes = TARGET.read_bytes()
     patched_sha = _sha_bytes(patched_bytes)
     patched_text_check = patched_bytes.decode("utf-8")
@@ -236,7 +240,7 @@ def ensure() -> dict[str, Any]:
         "desktop_commander_version": _package_version(),
         "target": str(TARGET),
         "policy_target": str(POLICY_TARGET),
-        "original_sha256": original_sha if changed else prior.get("original_sha256"),
+        "original_sha256": original_sha if source_changed else prior.get("original_sha256"),
         "patched_sha256": patched_sha,
         "backup_path": backup_path,
         "changed": changed,
