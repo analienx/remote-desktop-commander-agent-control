@@ -30,6 +30,51 @@ class BridgeError(RuntimeError):
     pass
 
 
+
+
+class ParentMonitor:
+    """Stable handle to the RDC terminal parent; PID reuse cannot fool this watcher."""
+    def __init__(self):
+        self.handle = None
+        self.kernel32 = None
+        if os.name != "nt":
+            return
+        import ctypes
+        from ctypes import wintypes
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        kernel32.WaitForSingleObject.restype = wintypes.DWORD
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        handle = kernel32.OpenProcess(0x00100000, False, os.getppid())  # SYNCHRONIZE
+        if not handle:
+            raise BridgeError("cannot monitor owning RDC terminal process")
+        self.handle = handle
+        self.kernel32 = kernel32
+
+    def exited(self, timeout_ms: int = 250) -> bool:
+        if os.name != "nt":
+            return False
+        result = int(self.kernel32.WaitForSingleObject(self.handle, timeout_ms))
+        if result == 0x00000000:  # WAIT_OBJECT_0
+            return True
+        if result == 0x00000102:  # WAIT_TIMEOUT
+            return False
+        raise BridgeError(f"RDC parent wait failed: 0x{result:08x}")
+
+    def close(self) -> None:
+        if self.handle and self.kernel32:
+            self.kernel32.CloseHandle(self.handle)
+            self.handle = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        self.close()
+
+
 class BridgeJob:
     """Own the SLRunner subtree so killing the RDC bridge cannot orphan execution."""
     def __init__(self):
@@ -234,7 +279,7 @@ def execute(request_file: Path) -> int:
         # No stdio redirection: RDC interaction is transparently forwarded through
         # bridge -> SLRunner -> project child. The bridge owns the whole subtree via a
         # KILL_ON_JOB_CLOSE Job Object so terminating the RDC session cannot orphan it.
-        with BridgeJob() as job:
+        with ParentMonitor() as parent, BridgeJob() as job:
             process = subprocess.Popen([
                 sys.executable, str(SLRUNNER_ENTRY), "--request", str(translated)
             ])
@@ -247,7 +292,21 @@ def execute(request_file: Path) -> int:
                 except (OSError, subprocess.SubprocessError):
                     pass
                 raise
-            return int(process.wait())
+            while True:
+                code = process.poll()
+                if code is not None:
+                    return int(code)
+                if parent.exited(250):
+                    print(json.dumps({
+                        "event": "RDC_SLRUNNER_PARENT_EXIT",
+                        "job_id": request["job_id"],
+                    }), file=sys.stderr, flush=True)
+                    job.close()  # KILL_ON_JOB_CLOSE tears down SLRunner + project child.
+                    try:
+                        process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                    return 130
     finally:
         translated.unlink(missing_ok=True)
         request_file.unlink(missing_ok=True)

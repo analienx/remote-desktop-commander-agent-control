@@ -62,6 +62,7 @@ class BridgeTests(unittest.TestCase):
         path = self.request()
         observed = {}
         process = mock.Mock()
+        process.poll.return_value = 7
         process.wait.return_value = 7
         def fake_popen(argv):
             translated = Path(argv[-1])
@@ -71,8 +72,12 @@ class BridgeTests(unittest.TestCase):
         job = mock.Mock()
         job.__enter__ = mock.Mock(return_value=job)
         job.__exit__ = mock.Mock(return_value=False)
+        parent = mock.Mock()
+        parent.__enter__ = mock.Mock(return_value=parent)
+        parent.__exit__ = mock.Mock(return_value=False)
         with mock.patch.object(bridge.subprocess, "Popen", side_effect=fake_popen), \
-             mock.patch.object(bridge, "BridgeJob", return_value=job):
+             mock.patch.object(bridge, "BridgeJob", return_value=job), \
+             mock.patch.object(bridge, "ParentMonitor", return_value=parent):
             code = bridge.execute(path)
         self.assertEqual(code, 7)
         job.assign.assert_called_once_with(process)
@@ -85,16 +90,40 @@ class BridgeTests(unittest.TestCase):
 
     def test_bridge_job_assignment_failure_kills_slrunner(self):
         process = mock.Mock()
+        process.poll.return_value = None
         process.wait.return_value = -9
         job = mock.Mock()
         job.__enter__ = mock.Mock(return_value=job)
         job.__exit__ = mock.Mock(return_value=False)
         job.assign.side_effect = bridge.BridgeError("cannot attach")
+        parent = mock.Mock()
+        parent.__enter__ = mock.Mock(return_value=parent)
+        parent.__exit__ = mock.Mock(return_value=False)
         with mock.patch.object(bridge.subprocess, "Popen", return_value=process), \
-             mock.patch.object(bridge, "BridgeJob", return_value=job):
+             mock.patch.object(bridge, "BridgeJob", return_value=job), \
+             mock.patch.object(bridge, "ParentMonitor", return_value=parent):
             with self.assertRaisesRegex(bridge.BridgeError, "cannot attach"):
                 bridge.execute(self.request())
         process.kill.assert_called_once()
+
+    def test_parent_exit_closes_job_and_returns_cancelled(self):
+        process = mock.Mock()
+        process.poll.side_effect = [None]
+        process.wait.return_value = -9
+        job = mock.Mock()
+        job.__enter__ = mock.Mock(return_value=job)
+        job.__exit__ = mock.Mock(return_value=False)
+        parent = mock.Mock()
+        parent.__enter__ = mock.Mock(return_value=parent)
+        parent.__exit__ = mock.Mock(return_value=False)
+        parent.exited.return_value = True
+        with mock.patch.object(bridge.subprocess, "Popen", return_value=process), \
+             mock.patch.object(bridge, "BridgeJob", return_value=job), \
+             mock.patch.object(bridge, "ParentMonitor", return_value=parent):
+            code = bridge.execute(self.request())
+        self.assertEqual(code, 130)
+        job.close.assert_called_once()
+        parent.exited.assert_called()
 
     def test_shell_commands_are_allowed_and_delegated_to_slrunner_guard(self):
         req = bridge._load_request(self.request(
