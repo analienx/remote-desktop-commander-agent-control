@@ -45,7 +45,10 @@ def _load_write_audit_hook():
 WRITE_AUDIT_HOOK = _load_write_audit_hook()
 
 IMPORT_LINE = "import { routeAnalienxRunner } from './analienx-runner-policy.js';"
+CONTROL_AUDIT_IMPORT = "import { beginNativeControl, finishNativeControl, failNativeControl } from './analienx-write-audit.js';"
 IMPORT_ANCHOR = "import { fileURLToPath } from 'url';"
+INTERACT_AUDIT_MARKER = "// ANALienx process interaction audit"
+FORCE_AUDIT_MARKER = "// ANALienx process termination audit"
 CALL_MARKER = "const routed = await routeAnalienxRunner(parsed.data, runnerOriginalShell);"
 CALL_SIGNATURE = re.compile(
     r"(?m)^(?P<indent>[ \t]*)const isAllowed = await commandManager\.validateCommand"
@@ -108,6 +111,13 @@ CALL_BLOCK = """    try {
 
 class HookError(RuntimeError):
     pass
+
+
+def _replace_once(source: str, old: str, new: str, label: str) -> str:
+    count = source.count(old)
+    if count != 1:
+        raise HookError(f"{label} signature changed or ambiguous (matches={count})")
+    return source.replace(old, new, 1)
 
 
 def _sha_bytes(data: bytes) -> str:
@@ -199,6 +209,115 @@ def _patched_source(original: str) -> str:
     return updated
 
 
+def _patched_control_audit(original: str) -> str:
+    markers = (
+        INTERACT_AUDIT_MARKER in original,
+        FORCE_AUDIT_MARKER in original,
+        CONTROL_AUDIT_IMPORT in original,
+    )
+    if any(markers) and not all(markers):
+        raise HookError("partial process-control audit hook detected")
+    if all(markers):
+        return original
+    if IMPORT_LINE not in original:
+        raise HookError("Runner import must be installed before process-control audit")
+    source = original.replace(
+        IMPORT_LINE, IMPORT_LINE + "\n" + CONTROL_AUDIT_IMPORT, 1
+    )
+    source = _replace_once(
+        source,
+        "    const { pid, input, timeout_ms = 8000, wait_for_prompt = true, verbose_timing = false } = parsed.data;",
+        "    const { pid, input, timeout_ms = 8000, wait_for_prompt = true, verbose_timing = false } = parsed.data;\n"
+        "    " + INTERACT_AUDIT_MARKER + "\n"
+        "    const nativeAudit = beginNativeControl('process_input', { pid, input });",
+        "interact audit begin",
+    )
+    source = _replace_once(
+        source,
+        "        return executeNodeCode(input, effectiveTimeout);",
+        "        try {\n"
+        "            const result = await executeNodeCode(input, effectiveTimeout);\n"
+        "            finishNativeControl(nativeAudit);\n"
+        "            return result;\n"
+        "        }\n"
+        "        catch (error) {\n"
+        "            failNativeControl(nativeAudit, error);\n"
+        "            throw error;\n"
+        "        }",
+        "virtual node interaction audit",
+    )
+    source = _replace_once(
+        source,
+        "        if (!success) {\n            return {",
+        "        if (!success) {\n"
+        "            failNativeControl(nativeAudit, new Error('process rejected input'));\n"
+        "            return {",
+        "process input rejection audit",
+    )
+    source = _replace_once(
+        source,
+        "        if (!wait_for_prompt) {\n            exitReason = 'no_wait';",
+        "        if (!wait_for_prompt) {\n"
+        "            exitReason = 'no_wait';\n"
+        "            finishNativeControl(nativeAudit);",
+        "no-wait interaction audit",
+    )
+    source = _replace_once(
+        source,
+        "        await waitForResponse();\n        // Clean and format output",
+        "        await waitForResponse();\n"
+        "        finishNativeControl(nativeAudit);\n"
+        "        // Clean and format output",
+        "interaction completion audit",
+    )
+    source = _replace_once(
+        source,
+        "    catch (error) {\n        const errorMessage = error instanceof Error ? error.message : String(error);\n        capture('server_interact_with_process_error', {",
+        "    catch (error) {\n"
+        "        failNativeControl(nativeAudit, error);\n"
+        "        const errorMessage = error instanceof Error ? error.message : String(error);\n"
+        "        capture('server_interact_with_process_error', {",
+        "interaction error audit",
+    )
+    source = _replace_once(
+        source,
+        "    const pid = parsed.data.pid;\n    // Handle virtual Node.js sessions (node:local)",
+        "    const pid = parsed.data.pid;\n"
+        "    " + FORCE_AUDIT_MARKER + "\n"
+        "    const nativeAudit = beginNativeControl('process_terminate', {\n"
+        "        pid, termination_kind: 'force_terminate'\n"
+        "    });\n"
+        "    // Handle virtual Node.js sessions (node:local)",
+        "force terminate audit begin",
+    )
+    source = _replace_once(
+        source,
+        "    if (virtualNodeSessions.has(pid)) {\n        virtualNodeSessions.delete(pid);\n        return {",
+        "    if (virtualNodeSessions.has(pid)) {\n"
+        "        virtualNodeSessions.delete(pid);\n"
+        "        finishNativeControl(nativeAudit);\n"
+        "        return {",
+        "virtual terminate audit",
+    )
+    source = _replace_once(
+        source,
+        "    const success = terminalManager.forceTerminate(pid);\n    return {",
+        "    let success = false;\n"
+        "    try {\n"
+        "        success = terminalManager.forceTerminate(pid);\n"
+        "        if (success) finishNativeControl(nativeAudit);\n"
+        "        else failNativeControl(nativeAudit, new Error('no active session'));\n"
+        "    }\n"
+        "    catch (error) {\n"
+        "        failNativeControl(nativeAudit, error);\n"
+        "        throw error;\n"
+        "    }\n"
+        "    return {",
+        "force terminate completion audit",
+    )
+    return source
+
+
 def _patched_schema(original: str) -> str:
     if SCHEMA_MARKER in original:
         return original
@@ -238,6 +357,11 @@ def status() -> dict[str, Any]:
     schema_text = SCHEMA_TARGET.read_text(encoding="utf-8") if schema_exists else ""
     import_present = IMPORT_LINE in target_text
     call_present = CALL_MARKER in target_text
+    control_audit_present = (
+        CONTROL_AUDIT_IMPORT in target_text
+        and INTERACT_AUDIT_MARKER in target_text
+        and FORCE_AUDIT_MARKER in target_text
+    )
     options_present = SCHEMA_MARKER in schema_text
     policy_matches = False
     if policy_exists and source_exists:
@@ -249,6 +373,7 @@ def status() -> dict[str, Any]:
         and policy_exists
         and import_present
         and call_present
+        and control_audit_present
         and options_present
         and policy_matches
         and slrunner_ready
@@ -268,6 +393,7 @@ def status() -> dict[str, Any]:
         "policy_exists": policy_exists,
         "import_present": import_present,
         "call_present": call_present,
+        "control_audit_present": control_audit_present,
         "policy_matches": policy_matches,
         "request_root": str(REQUEST_ROOT),
         "native_write_audit": write_audit_status,
@@ -297,12 +423,27 @@ def ensure() -> dict[str, Any]:
     original_bytes = TARGET.read_bytes()
     original_text = original_bytes.decode("utf-8")
     original_sha = _sha_bytes(original_bytes)
-    patched_text = _patched_source(original_text)
+    prior_patched_sha = prior.get("patched_sha256")
+    if isinstance(prior_patched_sha, str) and prior_patched_sha != original_sha:
+        raise HookError(
+            "Desktop Commander process source drifted since hook install; "
+            "refusing to patch unknown state"
+        )
+    patched_text = _patched_control_audit(_patched_source(original_text))
     source_changed = patched_text != original_text
 
     schema_original_bytes = SCHEMA_TARGET.read_bytes()
     schema_original_text = schema_original_bytes.decode("utf-8")
     schema_original_sha = _sha_bytes(schema_original_bytes)
+    prior_schema_patched_sha = prior.get("schema_patched_sha256")
+    if (
+        isinstance(prior_schema_patched_sha, str)
+        and prior_schema_patched_sha != schema_original_sha
+    ):
+        raise HookError(
+            "Desktop Commander schema drifted since hook install; "
+            "refusing to patch unknown state"
+        )
     schema_patched_text = _patched_schema(schema_original_text)
     schema_changed = schema_patched_text != schema_original_text
 
@@ -312,34 +453,60 @@ def ensure() -> dict[str, Any]:
     )
     changed = source_changed or schema_changed or policy_changed
 
-    backup: Path | None = None
+    prior_backup_raw = prior.get("backup_path")
+    prior_backup = (
+        Path(prior_backup_raw)
+        if isinstance(prior_backup_raw, str) and prior_backup_raw
+        else None
+    )
+    prior_patched_sha = prior.get("patched_sha256")
+    backup: Path | None = prior_backup
+    source_original_sha = prior.get("original_sha256")
     if source_changed:
-        backup = BACKUP_ROOT / f"improved-process-tools.{original_sha}.js"
-        if not backup.exists():
-            _write_atomic(backup, original_bytes)
+        if isinstance(prior_patched_sha, str):
+            if prior_patched_sha != original_sha:
+                raise HookError(
+                    "Desktop Commander process source drifted since hook install; "
+                    "refusing to redefine restore origin"
+                )
+            if prior_backup is None or not prior_backup.is_file():
+                raise HookError("original process-hook backup is missing")
+        else:
+            backup = BACKUP_ROOT / f"improved-process-tools.{original_sha}.js"
+            if not backup.exists():
+                _write_atomic(backup, original_bytes)
+            source_original_sha = original_sha
         _write_atomic(
             TARGET, patched_text.encode("utf-8"),
             allow_locked_target_fallback=True,
         )
-    else:
-        backup_raw = prior.get("backup_path")
-        backup = Path(backup_raw) if isinstance(backup_raw, str) and backup_raw else None
 
-    schema_backup: Path | None = None
+    prior_schema_backup_raw = prior.get("schema_backup_path")
+    prior_schema_backup = (
+        Path(prior_schema_backup_raw)
+        if isinstance(prior_schema_backup_raw, str) and prior_schema_backup_raw
+        else None
+    )
+    prior_schema_patched_sha = prior.get("schema_patched_sha256")
+    schema_backup: Path | None = prior_schema_backup
+    schema_origin_sha = prior.get("schema_original_sha256")
     if schema_changed:
-        schema_backup = BACKUP_ROOT / f"schemas.{schema_original_sha}.js"
-        if not schema_backup.exists():
-            _write_atomic(schema_backup, schema_original_bytes)
+        if isinstance(prior_schema_patched_sha, str):
+            if prior_schema_patched_sha != schema_original_sha:
+                raise HookError(
+                    "Desktop Commander schema drifted since hook install; "
+                    "refusing to redefine restore origin"
+                )
+            if prior_schema_backup is None or not prior_schema_backup.is_file():
+                raise HookError("original schema-hook backup is missing")
+        else:
+            schema_backup = BACKUP_ROOT / f"schemas.{schema_original_sha}.js"
+            if not schema_backup.exists():
+                _write_atomic(schema_backup, schema_original_bytes)
+            schema_origin_sha = schema_original_sha
         _write_atomic(
             SCHEMA_TARGET, schema_patched_text.encode("utf-8"),
             allow_locked_target_fallback=True,
-        )
-    else:
-        schema_backup_raw = prior.get("schema_backup_path")
-        schema_backup = (
-            Path(schema_backup_raw)
-            if isinstance(schema_backup_raw, str) and schema_backup_raw
-            else None
         )
 
     _write_atomic(POLICY_TARGET, policy_bytes)
@@ -352,6 +519,12 @@ def ensure() -> dict[str, Any]:
     schema_text_check = schema_patched_bytes.decode("utf-8")
     if IMPORT_LINE not in patched_text_check or CALL_MARKER not in patched_text_check:
         raise HookError("Runner hook verification failed after patch")
+    if not (
+        CONTROL_AUDIT_IMPORT in patched_text_check
+        and INTERACT_AUDIT_MARKER in patched_text_check
+        and FORCE_AUDIT_MARKER in patched_text_check
+    ):
+        raise HookError("process-control audit verification failed after patch")
     if SCHEMA_MARKER not in schema_text_check:
         raise HookError("Runner options schema verification failed after patch")
     if POLICY_TARGET.read_bytes() != POLICY_SOURCE.read_bytes():
@@ -372,16 +545,10 @@ def ensure() -> dict[str, Any]:
         "target": str(TARGET),
         "schema_target": str(SCHEMA_TARGET),
         "policy_target": str(POLICY_TARGET),
-        "original_sha256": (
-            original_sha if source_changed else prior.get("original_sha256")
-        ),
+        "original_sha256": source_original_sha,
         "patched_sha256": patched_sha,
         "backup_path": backup_path,
-        "schema_original_sha256": (
-            schema_original_sha
-            if schema_changed
-            else prior.get("schema_original_sha256")
-        ),
+        "schema_original_sha256": schema_origin_sha,
         "schema_patched_sha256": schema_patched_sha,
         "schema_backup_path": schema_backup_path,
         "changed": changed,
