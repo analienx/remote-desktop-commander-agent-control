@@ -3,6 +3,13 @@
 $ErrorActionPreference = 'SilentlyContinue'
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase
 
+$createdNew = $false
+$instanceMutex = New-Object System.Threading.Mutex($true, 'Local\Analienx.RdcRecovery', [ref]$createdNew)
+if (-not $createdNew) {
+    $instanceMutex.Dispose()
+    exit 0
+}
+
 $dcDir  = Join-Path $env:LOCALAPPDATA 'RDC-Agent'
 $report = Join-Path $dcDir 'guardian-status.json'
 $outLog = Join-Path $dcDir 'remote-output.log'
@@ -56,7 +63,7 @@ function Get-LogTail([string]$path, [int]$n) {
 
 # ---- window ----
 $w = New-Object System.Windows.Window
-$w.Title = 'RDC Agent Control'
+$w.Title = 'RDC Recovery'
 $w.Width = 760; $w.Height = 560
 $w.WindowStartupLocation = 'CenterScreen'
 $w.Background = (New-Object System.Windows.Media.SolidColorBrush ([System.Windows.Media.ColorConverter]::ConvertFromString($bg)))
@@ -65,11 +72,11 @@ $w.FontFamily = 'Segoe UI'
 $root = New-Object System.Windows.Controls.StackPanel
 $root.Margin = '20,16'
 [void]$root.Children.Add((New-Object System.Windows.Controls.TextBlock -Property @{
-    Text = 'REMOTE DESKTOP COMMANDER'
+    Text = 'RDC RECOVERY'
     FontSize = 22; FontWeight = 'Bold'; Foreground = (New-Object System.Windows.Media.SolidColorBrush ([System.Windows.Media.ColorConverter]::ConvertFromString($accent)))
 }))
 [void]$root.Children.Add((New-Object System.Windows.Controls.TextBlock -Property @{
-    Text = 'agent health  -  relay session  -  guardian decisions'
+    Text = 'fallback transport recovery  -  normal operations live in Analienx Control Center'
     FontSize = 12; Margin = '0,2,0,14'; Foreground = (New-Object System.Windows.Media.SolidColorBrush ([System.Windows.Media.ColorConverter]::ConvertFromString($dim)))
 }))
 
@@ -202,4 +209,9 @@ New-Button 'Run guardian now' {
 
 $w.Content = $root
 Invoke-Refresh
-[void]$w.ShowDialog()
+try {
+    [void]$w.ShowDialog()
+} finally {
+    try { $instanceMutex.ReleaseMutex() } catch { }
+    $instanceMutex.Dispose()
+}

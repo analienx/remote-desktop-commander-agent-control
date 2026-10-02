@@ -169,3 +169,32 @@ rollback notes: `docs/FOUNDRY_V3_RDC.md`; tests: `tests/RdcFoundryV3.Tests.ps1`.
 ## License
 
 [MIT](LICENSE) © 2026 analienx
+
+
+## Mandatory SLRunner routing for RDC process execution
+
+RDC native read tools remain direct. Every `start_process` call is transparently
+routed through the thin per-user SLRunner once it is installed.
+
+The caller does not construct a wrapper command. The Desktop Commander hook preserves
+the original command, shell and timeout, extracts a leading `cmd.exe`
+`cd /d <workspace> && ...` into the Runner cwd when present, writes one UUID request
+under `C:\Workspace\.analienx\rdc-requests`, and rewrites only the internal
+execution to the fixed Python bridge. The bridge then invokes the installed
+`%LOCALAPPDATA%\Analienx\SLRunner\slrunner.py` with inherited stdin/stdout/stderr.
+
+There is no loopback Runner service, bearer token, second scheduler, mutation broker,
+or approval engine in this path. SLRunner owns only process lifetime, catastrophic
+accident guard, heartbeat, logs and structured events. Project-specific safety stays
+inside the project scripts; untrusted execution belongs in Foundry.
+
+The hook is inserted before Desktop Commander's command validation, so its existing
+blocklist sees only the fixed bridge rather than accidentally matching words inside
+ordinary project commands. The `node:local` special execution path therefore cannot
+bypass SLRunner.
+
+If SLRunner or the bridge is absent, process execution fails closed. The Guardian keeps
+the signature-anchored hook installed, restarts the RDC agent only when the patch
+changes, and leaves native read operations untouched. The installer retains a
+content-addressed pre-patch backup and refuses destructive rollback after an unrelated
+upstream package change.

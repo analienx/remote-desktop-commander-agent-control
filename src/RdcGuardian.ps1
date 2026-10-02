@@ -16,6 +16,8 @@ $report    = Join-Path $dcDir 'guardian-status.json'
 $starter   = Join-Path $PSScriptRoot 'RdcAgentStart.ps1'
 $notify    = Join-Path $PSScriptRoot 'RdcNotify.ps1'
 $pkgIndex  = Join-Path $env:APPDATA 'npm\node_modules\@wonderwhy-er\desktop-commander\dist\index.js'
+$slRunner   = Join-Path $env:LOCALAPPDATA 'Analienx\SLRunner\slrunner.py'
+$runnerHook = Join-Path $PSScriptRoot 'rdc_runner_hook.py'
 $relayHost = 'mcp.desktopcommander.app'
 $restartCooldownMin = 10
 $bootGraceSec       = 120
@@ -106,6 +108,32 @@ $tcp.Close()
 if (-not $netOk) {
     Write-Log 'NETWORK-DOWN: relay unreachable - no restart thrash while offline'
     Save-State 'NETWORK-DOWN'; exit 3
+}
+
+# ---------- Runner routing boundary ----------
+# Once the thin per-user SLRunner exists, every RDC start_process must enter it.
+# Native RDC reads remain direct. Guardian only keeps the tiny Desktop Commander
+# hook installed and restarts the remote agent when the package patch changes.
+if (Test-Path -LiteralPath $slRunner -PathType Leaf) {
+    $python = Get-Command python.exe -ErrorAction SilentlyContinue
+    if (-not $python -or -not (Test-Path -LiteralPath $runnerHook -PathType Leaf)) {
+        Write-Log 'RUNNER-HOOK-FAILED: Python hook installer missing while SLRunner is active'
+        Save-State 'RUNNER-HOOK-FAILED'; exit 5
+    }
+    $hookResult = Invoke-RdcHidden -File $python.Source -Arguments @(('"' + $runnerHook + '"'), 'ensure')
+    if ($hookResult.ExitCode -ne 0) {
+        Write-Log ('RUNNER-HOOK-FAILED: ' + ($hookResult.Error + ' ' + $hookResult.Output).Trim())
+        Save-State 'RUNNER-HOOK-FAILED'; exit 5
+    }
+    if ($hookResult.Output -match '"changed"\s*:\s*true') {
+        Write-Log 'RUNNER-HOOK-UPDATED: restarting RDC agent so mandatory SLRunner routing takes effect'
+        if (Try-Restart 'mandatory SLRunner routing hook installed or updated') {
+            Save-State 'RUNNER-HOOK-RESTARTED'; exit 2
+        }
+        Save-State 'RUNNER-HOOK-UPDATED-RESTART-DEFERRED'; exit 2
+    }
+} else {
+    Write-Log 'RUNNER-HOOK-INACTIVE: thin SLRunner is not installed yet'
 }
 
 # ---------- 2. process (dedup + presence) ----------

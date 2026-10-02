@@ -239,6 +239,13 @@ Describe 'RDC regression: existing behavior preserved' {
         $g | Should Match 'NETWORK-DOWN'
     }
 
+    It 'guardian gates process routing on thin SLRunner, not the legacy runner token' {
+        $g = Get-Content (Join-Path $srcDir 'RdcGuardian.ps1') -Raw
+        $g | Should Match '\$slRunner\s*='
+        $g | Should Match 'Analienx\\SLRunner\\slrunner\.py'
+        $g | Should Not Match 'runner-client\\client-token'
+    }
+
     It 'watchdog one-window and rate-limit semantics are untouched' {
         $w = Get-Content (Join-Path $srcDir 'CrdWatchdog.ps1') -Raw
         $w | Should Match 'MainWindowTitle'
@@ -250,5 +257,11 @@ Describe 'RDC regression: existing behavior preserved' {
         $i = Get-Content (Join-Path (Split-Path -Parent $srcDir) 'install.ps1') -Raw
         $i | Should Match 'RDC-Agent-Guardian'
         $i | Should Match 'CRD-Watchdog'
+    }
+
+    It 'installer detects Windows without relying on the OS environment variable' {
+        $i = Get-Content (Join-Path (Split-Path -Parent $srcDir) 'install.ps1') -Raw
+        $i | Should Match '\[Environment\]::OSVersion\.Platform'
+        $i | Should Not Match '\$env:OS'
     }
 }

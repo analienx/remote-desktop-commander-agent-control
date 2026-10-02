@@ -19,8 +19,9 @@ function Step([string]$msg) { Write-Host ("==> " + $msg) -ForegroundColor Cyan }
 function Ok([string]$msg)   { Write-Host ("    " + $msg) -ForegroundColor Green }
 function Warn([string]$msg) { Write-Host ("    " + $msg) -ForegroundColor Yellow }
 
-if ($PSVersionTable.PSVersion.Major -lt 5 -or -not $IsWindows -and $PSVersionTable.PSVersion.Major -lt 6) { }
-if (-not ($env:OS -eq 'Windows_NT')) { throw 'This installer runs on Windows only.' }
+if ($PSVersionTable.PSVersion.Major -lt 5) { throw 'PowerShell 5.1+ is required.' }
+$isWindowsPlatform = ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT)
+if (-not $isWindowsPlatform) { throw 'This installer runs on Windows only.' }
 
 # ---- 1. node ----
 Step 'Checking Node.js'
@@ -86,13 +87,17 @@ if (-not $NoShortcut) {
     Step 'Creating desktop shortcut'
     $desktop = [Environment]::GetFolderPath('Desktop')
     $wshell = New-Object -ComObject WScript.Shell
-    $lnkPath = Join-Path $desktop 'RDC Agent Control.lnk'
+    $legacyShortcut = Join-Path $desktop 'RDC Agent Control.lnk'
+    if (Test-Path -LiteralPath $legacyShortcut) {
+        Remove-Item -LiteralPath $legacyShortcut -Force
+    }
+    $lnkPath = Join-Path $desktop 'RDC Recovery.lnk'
     $sc = $wshell.CreateShortcut($lnkPath)
     $sc.TargetPath = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
     $sc.Arguments = ('-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' + (Join-Path $InstallDir 'RdcStatus.ps1') + '"')
     $icon = Join-Path $InstallDir 'rdc-icon.ico'
     if (Test-Path -LiteralPath $icon) { $sc.IconLocation = ($icon + ',0') }
-    $sc.Description = 'RDC Agent Control dashboard'
+    $sc.Description = 'RDC recovery fallback; normal operations use Analienx Control Center'
     $sc.Save()
     Ok ('shortcut created: ' + $lnkPath)
 }
@@ -103,9 +108,10 @@ Step 'Running guardian once (initial health check)'
 Ok ('guardian exit code: ' + $LASTEXITCODE + '  (0=healthy 1=started 2=restarted 3=offline 4=needs-you 5=unrecoverable)')
 
 Write-Host ''
-Write-Host 'RDC Agent Control installed.' -ForegroundColor Green
+Write-Host 'RDC recovery tooling installed.' -ForegroundColor Green
 Write-Host 'First-time pairing (once):  desktop-commander remote' -ForegroundColor White
-Write-Host 'Dashboard:                  "RDC Agent Control" on your desktop' -ForegroundColor White
+Write-Host 'Fallback UI:                "RDC Recovery" on your desktop' -ForegroundColor White
+Write-Host 'Primary UI:                 Analienx Control Center' -ForegroundColor White
 if (-not $SkipCrdWatchdog) {
     Write-Host 'CRD: watch for one minimized "Chrome Remote Desktop" Edge window.' -ForegroundColor White
 }
