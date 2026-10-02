@@ -65,6 +65,23 @@ test('ordinary process command is transparently routed', async () => {
   }
 });
 
+test('read-only host inspection gets a stable workstation bucket', async () => {
+  const f = fixture();
+  try {
+    const routed = await routeAnalienxRunner(
+      { command: 'powershell.exe -NoProfile -Command "Get-Process | Select-Object -First 5"', shell: 'cmd.exe' },
+      'cmd.exe',
+    );
+    const request = JSON.parse(fs.readFileSync(routed.requestPath, 'utf8'));
+    assert.equal(request.initiative_id, 'workstation-ops');
+    assert.equal(request.project, 'supervisor-control-plane');
+    assert.equal(request.activity_type, 'host-observability');
+    assert.equal(request.category, 'RDC');
+  } finally {
+    f.close();
+  }
+});
+
 test('leading cmd cd /d becomes runner cwd instead of wrapper logic', async () => {
   const f = fixture();
   try {

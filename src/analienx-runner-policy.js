@@ -23,6 +23,7 @@ function initiativeRegistryPath() {
 
 const INTERNAL_BRIDGE_RE = /(?:^|&&|\|\||[;&|])\s*"?(?:python(?:\.exe)?|py(?:\.exe)?)"?\s+[^&|;\r\n]*rdc_runner_bridge\.py/i;
 const SAFE_INITIATIVE_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$/;
+const HOST_OBSERVABILITY_RE = /(?:get-process|get-ciminstance\s+win32_process|get-scheduledtask|get-service|\btasklist\b|uiautomation)/i;
 
 function insideWorkspace(candidate) {
   const root = path.win32.resolve(workspaceRoot()).toLowerCase();
@@ -46,7 +47,7 @@ export function splitCmdWorkingDirectory(command, shell) {
   return { cwd: path.win32.resolve(cwd), command: match[3] };
 }
 
-function resolveInitiativeContext(cwd) {
+function resolveInitiativeContext(cwd, command = '') {
   const registry = initiativeRegistryPath();
   if (fs.existsSync(registry)) {
     try {
@@ -82,7 +83,21 @@ function resolveInitiativeContext(cwd) {
       // unclassified bucket; the Runner UI makes this obvious to the operator.
     }
   }
-  const leaf = path.win32.basename(path.win32.resolve(cwd)) || 'workspace';
+  const resolvedCwd = path.win32.resolve(cwd);
+  if (
+    resolvedCwd.toLowerCase() === path.win32.resolve(workspaceRoot()).toLowerCase() &&
+    HOST_OBSERVABILITY_RE.test(String(command || ''))
+  ) {
+    return {
+      initiative_id: 'workstation-ops',
+      project: 'supervisor-control-plane',
+      repository: 'analienx/config',
+      stream: 'runner-redesign',
+      activity_type: 'host-observability',
+      classified: true,
+    };
+  }
+  const leaf = path.win32.basename(resolvedCwd) || 'workspace';
   const slug = leaf.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'workspace';
   return {
     initiative_id: ('unclassified-' + slug).slice(0, 120),
@@ -143,7 +158,7 @@ export async function routeAnalienxRunner(args, resolvedShell) {
       'cd /d "<registered worktree>" && so Runner attribution is explicit'
     );
   }
-  const initiative = resolveInitiativeContext(split.cwd);
+  const initiative = resolveInitiativeContext(split.cwd, split.command);
   const root = requestRoot();
   fs.mkdirSync(root, { recursive: true });
   cleanupStaleRequests(root);
