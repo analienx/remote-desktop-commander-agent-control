@@ -1,4 +1,4 @@
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { spawnSync } from 'child_process';
 import path from 'path';
 
@@ -64,6 +64,60 @@ export function failNativeWrite(context, error) {
         job_id: context.jobId,
         sequence: 1,
         paths: context.paths,
+        ...context.details,
+        phase: 'failed',
+        message: error instanceof Error ? error.message : String(error),
+    }, false);
+}
+
+function boundedControlDetails(details = {}) {
+    const pid = Number(details.pid);
+    if (!Number.isInteger(pid) || pid <= 0) {
+        throw new Error('ANALIENX_RDC_PROCESS_AUDIT_REQUIRED: invalid pid');
+    }
+    const safe = { pid };
+    if (typeof details.input === 'string') {
+        safe.input_sha256 = createHash('sha256').update(details.input, 'utf8').digest('hex');
+        safe.input_bytes = Buffer.byteLength(details.input, 'utf8');
+    }
+    if (typeof details.termination_kind === 'string') {
+        safe.termination_kind = details.termination_kind;
+    }
+    return safe;
+}
+
+export function beginNativeControl(operation, details = {}) {
+    const jobId = randomUUID();
+    const safe = boundedControlDetails(details);
+    invoke({
+        operation,
+        job_id: jobId,
+        sequence: 0,
+        ...safe,
+        phase: 'received',
+    }, true);
+    return { jobId, operation, details: safe, finished: false };
+}
+
+export function finishNativeControl(context) {
+    if (!context || context.finished) return;
+    context.finished = true;
+    invoke({
+        operation: context.operation,
+        job_id: context.jobId,
+        sequence: 1,
+        ...context.details,
+        phase: 'succeeded',
+    }, false);
+}
+
+export function failNativeControl(context, error) {
+    if (!context || context.finished) return;
+    context.finished = true;
+    invoke({
+        operation: context.operation,
+        job_id: context.jobId,
+        sequence: 1,
         ...context.details,
         phase: 'failed',
         message: error instanceof Error ? error.message : String(error),

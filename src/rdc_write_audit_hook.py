@@ -13,6 +13,7 @@ CONTROL_ROOT = Path(os.environ.get("LOCALAPPDATA", "")) / "RDC-Control"
 DC_ROOT = Path(os.environ.get("APPDATA", "")) / "npm" / "node_modules" / "@wonderwhy-er" / "desktop-commander"
 FS_TARGET = DC_ROOT / "dist" / "handlers" / "filesystem-handlers.js"
 EDIT_TARGET = DC_ROOT / "dist" / "tools" / "edit.js"
+PROCESS_TARGET = DC_ROOT / "dist" / "tools" / "process.js"
 HELPER_TARGET = DC_ROOT / "dist" / "tools" / "analienx-write-audit.js"
 HELPER_SOURCE = Path(__file__).resolve().with_name("analienx-write-audit.js")
 STATE_FILE = CONTROL_ROOT / "rdc-write-audit-hook-state.json"
@@ -21,6 +22,8 @@ FS_IMPORT = "import { beginNativeWrite, finishNativeWrite, failNativeWrite } fro
 EDIT_IMPORT = "import { beginNativeWrite, finishNativeWrite, failNativeWrite } from './analienx-write-audit.js';"
 FS_MARKER = "// ANALienx native write audit"
 EDIT_MARKER = "// ANALienx edit audit"
+PROCESS_IMPORT = "import { beginNativeControl, finishNativeControl, failNativeControl } from './analienx-write-audit.js';"
+PROCESS_MARKER = "// ANALienx process termination audit"
 
 class HookError(RuntimeError):
     pass
@@ -226,17 +229,80 @@ def _patch_edit(source: str) -> str:
     )
     return source
 
+def _patch_process(source: str) -> str:
+    if PROCESS_MARKER in source:
+        if PROCESS_IMPORT not in source:
+            raise HookError("partial process-control audit hook detected")
+        return source
+    anchor = "import { KillProcessArgsSchema } from './schemas.js';"
+    source = _replace_once(
+        source, anchor, anchor + "\n" + PROCESS_IMPORT, "process import"
+    )
+    old = """export async function killProcess(args) {
+    const parsed = KillProcessArgsSchema.safeParse(args);
+    if (!parsed.success) {
+        return {
+            content: [{ type: "text", text: `Error: Invalid arguments for kill_process: ${parsed.error}` }],
+            isError: true,
+        };
+    }
+    try {
+        process.kill(parsed.data.pid);
+        return {
+            content: [{ type: "text", text: `Successfully terminated process ${parsed.data.pid}` }],
+        };
+    }
+    catch (error) {
+        return {
+            content: [{ type: "text", text: `Error: Failed to kill process: ${error instanceof Error ? error.message : String(error)}` }],
+            isError: true,
+        };
+    }
+}"""
+    new = """export async function killProcess(args) {
+    const parsed = KillProcessArgsSchema.safeParse(args);
+    if (!parsed.success) {
+        return {
+            content: [{ type: "text", text: `Error: Invalid arguments for kill_process: ${parsed.error}` }],
+            isError: true,
+        };
+    }
+    // ANALienx process termination audit
+    const nativeAudit = beginNativeControl('process_terminate', {
+        pid: parsed.data.pid,
+        termination_kind: 'kill_process'
+    });
+    try {
+        process.kill(parsed.data.pid);
+        finishNativeControl(nativeAudit);
+        return {
+            content: [{ type: "text", text: `Successfully terminated process ${parsed.data.pid}` }],
+        };
+    }
+    catch (error) {
+        failNativeControl(nativeAudit, error);
+        return {
+            content: [{ type: "text", text: `Error: Failed to kill process: ${error instanceof Error ? error.message : String(error)}` }],
+            isError: true,
+        };
+    }
+}"""
+    return _replace_once(source, old, new, "kill_process function")
+
+
 def preflight() -> None:
-    for path in (FS_TARGET, EDIT_TARGET, HELPER_SOURCE):
+    for path in (FS_TARGET, EDIT_TARGET, PROCESS_TARGET, HELPER_SOURCE):
         if not path.is_file():
             raise HookError(f"required hook file is missing: {path}")
     _patch_filesystem(FS_TARGET.read_text(encoding="utf-8"))
     _patch_edit(EDIT_TARGET.read_text(encoding="utf-8"))
+    _patch_process(PROCESS_TARGET.read_text(encoding="utf-8"))
 
 
 def status() -> dict[str, Any]:
     fs = FS_TARGET.read_text(encoding="utf-8") if FS_TARGET.is_file() else ""
     edit = EDIT_TARGET.read_text(encoding="utf-8") if EDIT_TARGET.is_file() else ""
+    process = PROCESS_TARGET.read_text(encoding="utf-8") if PROCESS_TARGET.is_file() else ""
     helper_matches = (
         HELPER_TARGET.is_file() and HELPER_SOURCE.is_file()
         and HELPER_TARGET.read_bytes() == HELPER_SOURCE.read_bytes()
@@ -244,6 +310,7 @@ def status() -> dict[str, Any]:
     healthy = (
         FS_IMPORT in fs and FS_MARKER in fs
         and EDIT_IMPORT in edit and EDIT_MARKER in edit
+        and PROCESS_IMPORT in process and PROCESS_MARKER in process
         and helper_matches
     )
     return {
@@ -251,14 +318,16 @@ def status() -> dict[str, Any]:
         "healthy": healthy,
         "filesystem_hook": FS_IMPORT in fs and FS_MARKER in fs,
         "edit_hook": EDIT_IMPORT in edit and EDIT_MARKER in edit,
+        "process_hook": PROCESS_IMPORT in process and PROCESS_MARKER in process,
         "helper_matches": helper_matches,
         "filesystem_target": str(FS_TARGET),
         "edit_target": str(EDIT_TARGET),
+        "process_target": str(PROCESS_TARGET),
         "helper_target": str(HELPER_TARGET),
     }
 
 def ensure() -> dict[str, Any]:
-    for path in (FS_TARGET, EDIT_TARGET, HELPER_SOURCE):
+    for path in (FS_TARGET, EDIT_TARGET, PROCESS_TARGET, HELPER_SOURCE):
         if not path.is_file():
             raise HookError(f"required hook file is missing: {path}")
     CONTROL_ROOT.mkdir(parents=True, exist_ok=True)
@@ -272,12 +341,15 @@ def ensure() -> dict[str, Any]:
 
     fs_original = FS_TARGET.read_bytes()
     edit_original = EDIT_TARGET.read_bytes()
+    process_original = PROCESS_TARGET.read_bytes()
     fs_patched = _patch_filesystem(fs_original.decode("utf-8")).encode("utf-8")
     edit_patched = _patch_edit(edit_original.decode("utf-8")).encode("utf-8")
+    process_patched = _patch_process(process_original.decode("utf-8")).encode("utf-8")
     backups = {}
     for label, target, original, patched in (
         ("filesystem", FS_TARGET, fs_original, fs_patched),
         ("edit", EDIT_TARGET, edit_original, edit_patched),
+        ("process", PROCESS_TARGET, process_original, process_patched),
     ):
         if original != patched:
             backup = BACKUP_ROOT / f"{target.name}.{_sha(original)}.native-write-audit.bak"
@@ -293,12 +365,18 @@ def ensure() -> dict[str, Any]:
         "schema": "analienx.rdc-write-audit-hook-state/v1",
         "filesystem_sha256": _sha(FS_TARGET.read_bytes()),
         "edit_sha256": _sha(EDIT_TARGET.read_bytes()),
+        "process_sha256": _sha(PROCESS_TARGET.read_bytes()),
         "filesystem_backup": backups["filesystem"],
         "edit_backup": backups["edit"],
+        "process_backup": backups["process"],
     }
     _write_atomic(STATE_FILE, (json.dumps(state, indent=2) + "\n").encode("utf-8"))
     result = status()
-    result["changed"] = fs_original != fs_patched or edit_original != edit_patched
+    result["changed"] = (
+        fs_original != fs_patched
+        or edit_original != edit_patched
+        or process_original != process_patched
+    )
     if not result["healthy"]:
         raise HookError("native write audit hook is not healthy after ensure")
     return result
@@ -314,6 +392,7 @@ def uninstall() -> dict[str, Any]:
     pairs = (
         ("filesystem", FS_TARGET, state.get("filesystem_sha256"), state.get("filesystem_backup")),
         ("edit", EDIT_TARGET, state.get("edit_sha256"), state.get("edit_backup")),
+        ("process", PROCESS_TARGET, state.get("process_sha256"), state.get("process_backup")),
     )
     for label, target, expected, backup_raw in pairs:
         if not isinstance(expected, str) or not isinstance(backup_raw, str):
