@@ -53,7 +53,25 @@ class HookTests(unittest.TestCase):
             "});\n"
         )
         self.schema_target.write_text(self.schema_original, encoding="utf-8")
+        class FakeWriteAuditHook:
+            @staticmethod
+            def preflight():
+                return None
+
+            @staticmethod
+            def status():
+                return {"healthy": True}
+
+            @staticmethod
+            def ensure():
+                return {"healthy": True, "changed": False}
+
+            @staticmethod
+            def uninstall():
+                return {"ok": True, "changed": False}
+
         values = {
+            "WRITE_AUDIT_HOOK": FakeWriteAuditHook(),
             "CONTROL_ROOT": self.control,
             "DC_ROOT": self.dc_root,
             "TARGET": self.target,

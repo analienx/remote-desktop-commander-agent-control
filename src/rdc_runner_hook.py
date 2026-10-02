@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -27,6 +28,21 @@ STATE_FILE = CONTROL_ROOT / "rdc-runner-hook-state.json"
 BACKUP_ROOT = CONTROL_ROOT / "backups"
 REQUEST_ROOT = Path(r"C:\Workspace\.analienx\rdc-requests")
 SLRUNNER_ENTRY = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "Analienx" / "SLRunner" / "slrunner.py"
+
+
+def _load_write_audit_hook():
+    path = Path(__file__).resolve().with_name("rdc_write_audit_hook.py")
+    if not path.is_file():
+        raise RuntimeError(f"native-write audit hook module is missing: {path}")
+    spec = importlib.util.spec_from_file_location("analienx_rdc_write_audit_hook", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot load native-write audit hook: {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+WRITE_AUDIT_HOOK = _load_write_audit_hook()
 
 IMPORT_LINE = "import { routeAnalienxRunner } from './analienx-runner-policy.js';"
 IMPORT_ANCHOR = "import { fileURLToPath } from 'url';"
@@ -210,6 +226,10 @@ def _patched_schema(original: str) -> str:
 
 
 def status() -> dict[str, Any]:
+    try:
+        write_audit_status = WRITE_AUDIT_HOOK.status()
+    except Exception as exc:
+        write_audit_status = {"healthy": False, "error": str(exc)}
     target_exists = TARGET.is_file()
     schema_exists = SCHEMA_TARGET.is_file()
     policy_exists = POLICY_TARGET.is_file()
@@ -232,6 +252,7 @@ def status() -> dict[str, Any]:
         and options_present
         and policy_matches
         and slrunner_ready
+        and write_audit_status.get("healthy") is True
     )
     return {
         "schema": "analienx.rdc-runner-hook/v1",
@@ -249,7 +270,9 @@ def status() -> dict[str, Any]:
         "call_present": call_present,
         "policy_matches": policy_matches,
         "request_root": str(REQUEST_ROOT),
+        "native_write_audit": write_audit_status,
     }
+
 def ensure() -> dict[str, Any]:
     if not SLRUNNER_ENTRY.is_file():
         raise HookError(
@@ -261,6 +284,10 @@ def ensure() -> dict[str, Any]:
         raise HookError(f"Desktop Commander tool schema is missing: {SCHEMA_TARGET}")
     if not POLICY_SOURCE.is_file():
         raise HookError(f"Runner policy source is missing: {POLICY_SOURCE}")
+    try:
+        WRITE_AUDIT_HOOK.preflight()
+    except Exception as exc:
+        raise HookError(f"native-write audit preflight failed: {exc}") from exc
 
     CONTROL_ROOT.mkdir(parents=True, exist_ok=True)
     BACKUP_ROOT.mkdir(parents=True, exist_ok=True)
@@ -329,6 +356,11 @@ def ensure() -> dict[str, Any]:
         raise HookError("Runner options schema verification failed after patch")
     if POLICY_TARGET.read_bytes() != POLICY_SOURCE.read_bytes():
         raise HookError("Runner policy module verification failed after copy")
+    try:
+        write_audit_result = WRITE_AUDIT_HOOK.ensure()
+    except Exception as exc:
+        raise HookError(f"native-write audit install failed: {exc}") from exc
+    changed = changed or bool(write_audit_result.get("changed"))
 
     backup_path = str(backup) if backup else prior.get("backup_path")
     schema_backup_path = (
@@ -365,8 +397,16 @@ def ensure() -> dict[str, Any]:
 
 
 def uninstall() -> dict[str, Any]:
+    try:
+        write_audit_result = WRITE_AUDIT_HOOK.uninstall()
+    except Exception as exc:
+        raise HookError(f"native-write audit uninstall failed: {exc}") from exc
     if not STATE_FILE.is_file():
-        return {"ok": True, "changed": False, "reason": "no hook state"}
+        return {
+            "ok": True,
+            "changed": bool(write_audit_result.get("changed")),
+            "reason": "no process hook state",
+        }
     state = _read_json(STATE_FILE)
     expected = state.get("patched_sha256")
     backup_raw = state.get("backup_path")
