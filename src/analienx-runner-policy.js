@@ -61,6 +61,7 @@ function resolveInitiativeContext(cwd) {
             fs.existsSync(item.root) &&
             SAFE_INITIATIVE_RE.test(item.initiative_id) &&
             (item.project == null || (typeof item.project === 'string' && item.project.length > 0 && item.project.length <= 160)) &&
+            (item.repository == null || (typeof item.repository === 'string' && item.repository.length > 0 && item.repository.length <= 160)) &&
             (item.stream == null || (typeof item.stream === 'string' && item.stream.length > 0 && item.stream.length <= 160)) &&
             (item.activity_type == null || (typeof item.activity_type === 'string' && item.activity_type.length > 0 && item.activity_type.length <= 120)) &&
             (value === root || value.startsWith(root + '\\')))
@@ -69,6 +70,7 @@ function resolveInitiativeContext(cwd) {
           return {
             initiative_id: matches[0].item.initiative_id,
             project: matches[0].item.project || null,
+            repository: matches[0].item.repository || null,
             stream: matches[0].item.stream || null,
             activity_type: matches[0].item.activity_type || 'rdc-command',
             classified: true,
@@ -85,6 +87,7 @@ function resolveInitiativeContext(cwd) {
   return {
     initiative_id: ('unclassified-' + slug).slice(0, 120),
     project: null,
+    repository: null,
     stream: null,
     activity_type: 'rdc-command',
     classified: false,
@@ -128,6 +131,18 @@ export async function routeAnalienxRunner(args, resolvedShell) {
   }
   const originalShell = String(resolvedShell || args?.shell || process.env.COMSPEC || 'cmd.exe');
   const split = splitCmdWorkingDirectory(original, originalShell);
+  const workspace = path.win32.resolve(workspaceRoot()).toLowerCase();
+  const splitCwd = path.win32.resolve(split.cwd).toLowerCase();
+  const normalizedCommand = original.replaceAll('/', '\\').toLowerCase();
+  const referencesRepoScope =
+    normalizedCommand.includes(workspace + '\\worktrees\\') ||
+    normalizedCommand.includes(workspace + '\\repos\\');
+  if (splitCwd === workspace && referencesRepoScope) {
+    throw new Error(
+      'ANALIENX_RDC_CONTEXT_REQUIRED: repo-scoped RDC process commands must start with ' +
+      'cd /d "<registered worktree>" && so Runner attribution is explicit'
+    );
+  }
   const initiative = resolveInitiativeContext(split.cwd);
   const root = requestRoot();
   fs.mkdirSync(root, { recursive: true });
@@ -141,6 +156,8 @@ export async function routeAnalienxRunner(args, resolvedShell) {
     initiative_id: initiative.initiative_id,
     activity_type: initiative.activity_type,
     project: initiative.project,
+    repository: initiative.repository,
+    worktree: split.cwd,
     stream: initiative.stream,
     category: initiative.classified ? 'RDC' : 'RDC-UNCLASSIFIED',
     // Desktop Commander's timeout_ms controls how long start_process waits for
