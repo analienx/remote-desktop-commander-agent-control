@@ -201,8 +201,12 @@ Native filesystem mutations are covered by the same boundary without converting 
 into shell commands. `write_file`, `edit_block`, `create_directory`, `move_file`, and `write_pdf`
 emit a strict pre-write audit event and a terminal result through the installed
 SLRunner audit helper. File contents and edit search/replace text are never sent to
-the audit ledger. The native-write patch is signature-anchored, independently backed
-up, and included in the Guardian health result.
+the audit ledger. Native process controls are covered too: `interact_with_process`
+stores only PID + SHA-256/byte count for submitted input, while `force_terminate`
+and legacy `kill_process` store PID + termination kind. Raw interactive input and
+exception text from interpreters are never persisted. The native audit patches are
+signature-anchored, independently backed up, and included in the Guardian health
+result.
 
 The installer retains content-addressed pre-patch backups and refuses destructive
 rollback after an unrelated upstream package change.

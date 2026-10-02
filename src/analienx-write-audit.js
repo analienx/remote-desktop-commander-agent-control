@@ -114,12 +114,14 @@ export function finishNativeControl(context) {
 export function failNativeControl(context, error) {
     if (!context || context.finished) return;
     context.finished = true;
+    // Interactive runtimes can echo submitted code inside exception messages.
+    // Keep the audit failure content-independent: PID/fingerprint/result are enough.
     invoke({
         operation: context.operation,
         job_id: context.jobId,
         sequence: 1,
         ...context.details,
         phase: 'failed',
-        message: error instanceof Error ? error.message : String(error),
+        message: 'process control failed',
     }, false);
 }
