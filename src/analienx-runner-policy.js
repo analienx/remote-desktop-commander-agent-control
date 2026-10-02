@@ -29,6 +29,14 @@ function repoIndexPath() {
 const INTERNAL_BRIDGE_RE = /(?:^|&&|\|\||[;&|])\s*"?(?:python(?:\.exe)?|py(?:\.exe)?)"?\s+[^&|;\r\n]*rdc_runner_bridge\.py/i;
 const SAFE_INITIATIVE_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$/;
 const HOST_OBSERVABILITY_RE = /(?:get-process|get-ciminstance\s+win32_process|get-scheduledtask|get-service|\btasklist\b|uiautomation)/i;
+const MAX_ROUTING_FILE_BYTES = 4 * 1024 * 1024;
+const MAX_ROUTING_ENTRIES = 5000;
+
+function readBoundedRoutingJson(file) {
+  const stat = fs.statSync(file);
+  if (!stat.isFile() || stat.size > MAX_ROUTING_FILE_BYTES) return null;
+  return JSON.parse(fs.readFileSync(file, 'utf8'));
+}
 
 function insideWorkspace(candidate) {
   const root = path.win32.resolve(workspaceRoot()).toLowerCase();
@@ -56,8 +64,9 @@ function resolveInitiativeContext(cwd, command = '') {
   const registry = initiativeRegistryPath();
   if (fs.existsSync(registry)) {
     try {
-      const payload = JSON.parse(fs.readFileSync(registry, 'utf8'));
-      if (payload?.schema === 1 && Array.isArray(payload.bindings)) {
+      const payload = readBoundedRoutingJson(registry);
+      if (payload?.schema === 1 && Array.isArray(payload.bindings) &&
+          payload.bindings.length <= MAX_ROUTING_ENTRIES) {
         const value = path.win32.resolve(cwd).toLowerCase();
         const matches = payload.bindings
           .filter((item) => item && typeof item.root === 'string' && typeof item.initiative_id === 'string')
@@ -92,8 +101,9 @@ function resolveInitiativeContext(cwd, command = '') {
   const repoIndex = repoIndexPath();
   if (fs.existsSync(repoIndex)) {
     try {
-      const payload = JSON.parse(fs.readFileSync(repoIndex, 'utf8'));
-      if (payload?.schema === 1 && Array.isArray(payload.entries)) {
+      const payload = readBoundedRoutingJson(repoIndex);
+      if (payload?.schema === 1 && Array.isArray(payload.entries) &&
+          payload.entries.length <= MAX_ROUTING_ENTRIES) {
         const value = resolvedCwd.toLowerCase();
         const matches = payload.entries
           .filter((item) => item && typeof item.root === 'string')

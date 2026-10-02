@@ -99,6 +99,52 @@ test('repo index removes unnecessary unclassified worktree buckets', async () =>
   }
 });
 
+
+test('oversized repo index fails closed to visible unclassified routing', async () => {
+  const f = fixture();
+  try {
+    const repo = path.join(f.workspace, 'worktrees', 'oversized-index');
+    fs.mkdirSync(repo, { recursive: true });
+    fs.mkdirSync(path.dirname(f.repoIndex), { recursive: true });
+    fs.writeFileSync(f.repoIndex, Buffer.alloc(4 * 1024 * 1024 + 1, 0x78));
+    const routed = await routeAnalienxRunner(
+      { command: 'cd /d "' + repo + '" && git status', shell: 'cmd.exe' },
+      'cmd.exe',
+    );
+    const request = JSON.parse(fs.readFileSync(routed.requestPath, 'utf8'));
+    assert.match(request.initiative_id, /^unclassified-/);
+    assert.equal(request.project, null);
+    assert.equal(request.category, 'RDC-UNCLASSIFIED');
+  } finally {
+    f.close();
+  }
+});
+
+test('repo index with excessive entries is ignored', async () => {
+  const f = fixture();
+  try {
+    const repo = path.join(f.workspace, 'worktrees', 'too-many-entries');
+    fs.mkdirSync(repo, { recursive: true });
+    fs.mkdirSync(path.dirname(f.repoIndex), { recursive: true });
+    const entries = Array.from({ length: 5001 }, (_, i) => ({
+      root: i === 0 ? repo : path.join(f.workspace, 'worktrees', 'x-' + i),
+      project: 'supervisor-control-plane',
+      repository: 'analienx/config',
+      stream: null,
+    }));
+    fs.writeFileSync(f.repoIndex, JSON.stringify({ schema: 1, entries }));
+    const routed = await routeAnalienxRunner(
+      { command: 'cd /d "' + repo + '" && git status', shell: 'cmd.exe' },
+      'cmd.exe',
+    );
+    const request = JSON.parse(fs.readFileSync(routed.requestPath, 'utf8'));
+    assert.equal(request.project, null);
+    assert.equal(request.category, 'RDC-UNCLASSIFIED');
+  } finally {
+    f.close();
+  }
+});
+
 test('read-only host inspection gets a stable workstation bucket', async () => {
   const f = fixture();
   try {
