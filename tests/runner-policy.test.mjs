@@ -14,6 +14,7 @@ function fixture() {
   const requests = path.join(workspace, '.analienx', 'rdc-requests');
   const bridge = path.join(root, 'RDC-Control', 'rdc_runner_bridge.py');
   const initiatives = path.join(workspace, '.analienx', 'runner', 'initiatives.json');
+  const repoIndex = path.join(workspace, '.analienx', 'runner', 'repo-index.json');
   fs.mkdirSync(path.dirname(bridge), { recursive: true });
   fs.mkdirSync(workspace, { recursive: true });
   fs.writeFileSync(bridge, '# fixture\n');
@@ -22,13 +23,15 @@ function fixture() {
     requests: process.env.ANALIENX_RDC_REQUEST_ROOT,
     bridge: process.env.ANALIENX_RDC_BRIDGE,
     initiatives: process.env.ANALIENX_RDC_INITIATIVE_REGISTRY,
+    repoIndex: process.env.ANALIENX_RDC_REPO_INDEX,
   };
   process.env.ANALIENX_RDC_WORKSPACE_ROOT = workspace;
   process.env.ANALIENX_RDC_REQUEST_ROOT = requests;
   process.env.ANALIENX_RDC_BRIDGE = bridge;
   process.env.ANALIENX_RDC_INITIATIVE_REGISTRY = initiatives;
+  process.env.ANALIENX_RDC_REPO_INDEX = repoIndex;
   return {
-    root, workspace, requests, bridge, initiatives,
+    root, workspace, requests, bridge, initiatives, repoIndex,
     close() {
       if (prior.workspace === undefined) delete process.env.ANALIENX_RDC_WORKSPACE_ROOT;
       else process.env.ANALIENX_RDC_WORKSPACE_ROOT = prior.workspace;
@@ -38,6 +41,8 @@ function fixture() {
       else process.env.ANALIENX_RDC_BRIDGE = prior.bridge;
       if (prior.initiatives === undefined) delete process.env.ANALIENX_RDC_INITIATIVE_REGISTRY;
       else process.env.ANALIENX_RDC_INITIATIVE_REGISTRY = prior.initiatives;
+      if (prior.repoIndex === undefined) delete process.env.ANALIENX_RDC_REPO_INDEX;
+      else process.env.ANALIENX_RDC_REPO_INDEX = prior.repoIndex;
       fs.rmSync(root, { recursive: true, force: true });
     },
   };
@@ -60,6 +65,35 @@ test('ordinary process command is transparently routed', async () => {
     assert.equal(request.timeout_seconds, 86400);
     assert.match(request.initiative_id, /^unclassified-/);
     assert.equal(request.category, 'RDC-UNCLASSIFIED');
+  } finally {
+    f.close();
+  }
+});
+
+test('repo index removes unnecessary unclassified worktree buckets', async () => {
+  const f = fixture();
+  try {
+    const repo = path.join(f.workspace, 'worktrees', 'config-muse-goals');
+    fs.mkdirSync(repo, { recursive: true });
+    fs.mkdirSync(path.dirname(f.repoIndex), { recursive: true });
+    fs.writeFileSync(f.repoIndex, JSON.stringify({
+      schema: 1,
+      entries: [{
+        root: repo,
+        repository: 'analienx/config',
+        project: 'supervisor-control-plane',
+        stream: null,
+      }],
+    }, null, 2));
+    const routed = await routeAnalienxRunner(
+      { command: 'cd /d "' + repo + '" && git status', shell: 'cmd.exe' },
+      'cmd.exe',
+    );
+    const request = JSON.parse(fs.readFileSync(routed.requestPath, 'utf8'));
+    assert.equal(request.initiative_id, 'adhoc-supervisor-control-plane');
+    assert.equal(request.project, 'supervisor-control-plane');
+    assert.equal(request.repository, 'analienx/config');
+    assert.equal(request.category, 'RDC');
   } finally {
     f.close();
   }

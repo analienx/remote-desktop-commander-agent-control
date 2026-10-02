@@ -21,6 +21,11 @@ function initiativeRegistryPath() {
     path.win32.join(workspaceRoot(), '.analienx', 'runner', 'initiatives.json');
 }
 
+function repoIndexPath() {
+  return process.env.ANALIENX_RDC_REPO_INDEX ||
+    path.win32.join(workspaceRoot(), '.analienx', 'runner', 'repo-index.json');
+}
+
 const INTERNAL_BRIDGE_RE = /(?:^|&&|\|\||[;&|])\s*"?(?:python(?:\.exe)?|py(?:\.exe)?)"?\s+[^&|;\r\n]*rdc_runner_bridge\.py/i;
 const SAFE_INITIATIVE_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$/;
 const HOST_OBSERVABILITY_RE = /(?:get-process|get-ciminstance\s+win32_process|get-scheduledtask|get-service|\btasklist\b|uiautomation)/i;
@@ -84,6 +89,41 @@ function resolveInitiativeContext(cwd, command = '') {
     }
   }
   const resolvedCwd = path.win32.resolve(cwd);
+  const repoIndex = repoIndexPath();
+  if (fs.existsSync(repoIndex)) {
+    try {
+      const payload = JSON.parse(fs.readFileSync(repoIndex, 'utf8'));
+      if (payload?.schema === 1 && Array.isArray(payload.entries)) {
+        const value = resolvedCwd.toLowerCase();
+        const matches = payload.entries
+          .filter((item) => item && typeof item.root === 'string')
+          .map((item) => ({ item, root: path.win32.resolve(item.root).toLowerCase() }))
+          .filter(({ item, root }) =>
+            insideWorkspace(root) &&
+            fs.existsSync(item.root) &&
+            typeof item.project === 'string' && item.project.length > 0 && item.project.length <= 160 &&
+            (item.repository == null || (typeof item.repository === 'string' && item.repository.length <= 160)) &&
+            (item.stream == null || (typeof item.stream === 'string' && item.stream.length <= 160)) &&
+            (value === root || value.startsWith(root + '\\')))
+          .sort((a, b) => b.root.length - a.root.length);
+        if (matches.length > 0) {
+          const item = matches[0].item;
+          const slug = String(item.project).replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '');
+          return {
+            initiative_id: ('adhoc-' + (slug || 'repo')).slice(0, 120),
+            project: item.project,
+            repository: item.repository || null,
+            stream: item.stream || null,
+            activity_type: 'rdc-command',
+            classified: true,
+            inferred: true,
+          };
+        }
+      }
+    } catch {
+      // A stale/malformed discovery index must never override explicit bindings.
+    }
+  }
   if (
     resolvedCwd.toLowerCase() === path.win32.resolve(workspaceRoot()).toLowerCase() &&
     HOST_OBSERVABILITY_RE.test(String(command || ''))
