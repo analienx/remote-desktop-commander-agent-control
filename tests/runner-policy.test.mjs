@@ -70,6 +70,107 @@ test('ordinary process command is transparently routed', async () => {
   }
 });
 
+test('typed capability options become a scoped Runner capability request', async () => {
+  const f = fixture();
+  try {
+    const repo = path.join(f.workspace, 'worktrees', 'cinema-feral');
+    fs.mkdirSync(repo, { recursive: true });
+    fs.mkdirSync(path.dirname(f.initiatives), { recursive: true });
+    fs.writeFileSync(f.initiatives, JSON.stringify({
+      schema: 1,
+      bindings: [{
+        root: repo,
+        initiative_id: 'feral-60s-trailer',
+        project: 'cinema',
+        repository: 'analienx/cinema',
+        stream: 'autonomous-production',
+        activity_type: 'keyframe-generation',
+      }],
+    }));
+    const routed = await routeAnalienxRunner({
+      command: 'cd /d "' + repo + '" && runner:capability',
+      shell: 'cmd.exe',
+      options: {
+        capability: {
+          schema: 1,
+          action: 'read_many',
+          paths: ['productions/feral/a.md', 'productions/feral/b.json'],
+        },
+      },
+    }, 'cmd.exe');
+    const request = JSON.parse(fs.readFileSync(routed.requestPath, 'utf8'));
+    assert.equal(request.command, undefined);
+    assert.equal(request.capability.action, 'read_many');
+    assert.deepEqual(request.capability.paths, [
+      'productions/feral/a.md', 'productions/feral/b.json',
+    ]);
+    assert.equal(request.project, 'cinema');
+    assert.equal(request.initiative_id, 'feral-60s-trailer');
+    assert.equal(path.win32.normalize(request.cwd), path.win32.normalize(repo));
+  } finally {
+    f.close();
+  }
+});
+
+test('repo capability requires explicit routed cwd', async () => {
+  const f = fixture();
+  try {
+    await assert.rejects(
+      routeAnalienxRunner({
+        command: 'runner:capability',
+        shell: 'cmd.exe',
+        options: { capability: { schema: 1, action: 'search', roots: ['.'], query: 'x' } },
+      }, 'cmd.exe'),
+      /ANALIENX_RDC_CONTEXT_REQUIRED/,
+    );
+  } finally {
+    f.close();
+  }
+});
+
+test('system capability may use workstation scope without repo cwd', async () => {
+  const f = fixture();
+  try {
+    const routed = await routeAnalienxRunner({
+      command: 'runner:capability',
+      shell: 'cmd.exe',
+      options: { capability: { schema: 1, action: 'system' } },
+    }, 'cmd.exe');
+    const request = JSON.parse(fs.readFileSync(routed.requestPath, 'utf8'));
+    assert.equal(request.capability.action, 'system');
+    assert.equal(request.initiative_id, 'workstation-ops');
+    assert.equal(request.project, 'supervisor-control-plane');
+  } finally {
+    f.close();
+  }
+});
+
+test('capability options reject unknown fields and pseudo-command mismatch', async () => {
+  const f = fixture();
+  try {
+    const repo = path.join(f.workspace, 'worktrees', 'repo');
+    fs.mkdirSync(repo, { recursive: true });
+    await assert.rejects(
+      routeAnalienxRunner({
+        command: 'cd /d "' + repo + '" && runner:capability',
+        shell: 'cmd.exe',
+        options: { capability: { schema: 1, action: 'system', command: 'whoami' } },
+      }, 'cmd.exe'),
+      /unknown capability fields/,
+    );
+    await assert.rejects(
+      routeAnalienxRunner({
+        command: 'cd /d "' + repo + '" && git status',
+        shell: 'cmd.exe',
+        options: { capability: { schema: 1, action: 'system' } },
+      }, 'cmd.exe'),
+      /require command runner:capability/,
+    );
+  } finally {
+    f.close();
+  }
+});
+
 test('repo index removes unnecessary unclassified worktree buckets', async () => {
   const f = fixture();
   try {

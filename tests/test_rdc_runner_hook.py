@@ -17,6 +17,7 @@ class HookTests(unittest.TestCase):
         self.control = root / "control"
         self.dc_root = root / "desktop-commander"
         self.target = self.dc_root / "dist" / "tools" / "improved-process-tools.js"
+        self.schema_target = self.dc_root / "dist" / "tools" / "schemas.js"
         self.policy_target = self.dc_root / "dist" / "tools" / "analienx-runner-policy.js"
         self.policy_source = self.control / "analienx-runner-policy.js"
         self.state = self.control / "state.json"
@@ -41,10 +42,22 @@ class HookTests(unittest.TestCase):
             "}\n"
         )
         self.target.write_text(self.original, encoding="utf-8")
+        self.schema_original = (
+            "import { z } from \"zod\";\n"
+            "export const StartProcessArgsSchema = z.object({\n"
+            "    command: z.string(),\n"
+            "    timeout_ms: z.number(),\n"
+            "    shell: z.string().optional(),\n"
+            "    verbose_timing: z.boolean().optional(),\n"
+            "    origin: z.enum(['ui', 'llm']).optional(),\n"
+            "});\n"
+        )
+        self.schema_target.write_text(self.schema_original, encoding="utf-8")
         values = {
             "CONTROL_ROOT": self.control,
             "DC_ROOT": self.dc_root,
             "TARGET": self.target,
+            "SCHEMA_TARGET": self.schema_target,
             "POLICY_TARGET": self.policy_target,
             "POLICY_SOURCE": self.policy_source,
             "STATE_FILE": self.state,
@@ -73,6 +86,10 @@ class HookTests(unittest.TestCase):
         self.assertIn(hook.CALL_MARKER, patched)
         self.assertIn("parsed.data.command = routed.command;", patched)
         self.assertLess(patched.index(hook.CALL_MARKER), patched.index("const isAllowed = await commandManager.validateCommand(parsed.data.command);"))
+        schema_patched = self.schema_target.read_text(encoding="utf-8")
+        self.assertIn(hook.SCHEMA_MARKER, schema_patched)
+        self.assertIn("options: z.object({", schema_patched)
+        self.assertIn("'read_many'", schema_patched)
         second = hook.ensure()
         self.assertFalse(second["changed"])
         self.policy_source.write_text(
@@ -85,6 +102,7 @@ class HookTests(unittest.TestCase):
         self.assertFalse(hook.ensure()["changed"])
         hook.uninstall()
         self.assertEqual(self.target.read_text(encoding="utf-8"), self.original)
+        self.assertEqual(self.schema_target.read_text(encoding="utf-8"), self.schema_original)
 
     def test_partial_hook_refuses_patch(self):
         self.target.write_text(hook.IMPORT_LINE + "\n" + self.original, encoding="utf-8")

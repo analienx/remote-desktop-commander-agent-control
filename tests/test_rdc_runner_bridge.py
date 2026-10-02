@@ -137,6 +137,28 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(req["argv"], ["python", "tool.py"])
         self.assertIsNone(req["command"])
 
+    def test_typed_capability_form_is_supported_and_strict(self):
+        req = bridge._load_request(self.request(
+            command=None,
+            capability={
+                "schema": 1,
+                "action": "search",
+                "roots": ["."],
+                "query": "needle",
+            },
+        ))
+        self.assertIsNone(req["command"])
+        self.assertEqual(req["capability"]["action"], "search")
+        with self.assertRaisesRegex(bridge.BridgeError, "unknown capability fields"):
+            bridge._load_request(self.request(
+                command=None,
+                capability={
+                    "schema": 1,
+                    "action": "system",
+                    "command": "whoami",
+                },
+            ))
+
     def test_missing_initiative_is_rejected(self):
         with self.assertRaisesRegex(bridge.BridgeError, "initiative_id"):
             bridge._load_request(self.request(initiative_id=None))

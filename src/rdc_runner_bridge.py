@@ -24,6 +24,15 @@ SCHEMA = "analienx.rdc-slrunner-request/v1"
 MAX_ARGV = 256
 MAX_ARG = 32768
 MAX_COMMAND = 131072
+MAX_CAPABILITY_BYTES = 256 * 1024
+CAPABILITY_ACTIONS = {
+    "read_many", "list", "search", "repo_status",
+    "snapshot", "delta", "system", "processes",
+}
+CAPABILITY_FIELDS = {
+    "schema", "action", "paths", "roots", "query", "max_results", "max_bytes",
+    "max_files", "max_depth", "snapshot_id", "excludes", "include_content",
+}
 
 
 class BridgeError(RuntimeError):
@@ -177,8 +186,8 @@ def _load_request(path: Path) -> dict:
     if not isinstance(payload, dict):
         raise BridgeError("request JSON must be an object")
     allowed = {
-        "schema", "cwd", "command", "argv", "shell", "project", "stream", "category",
-        "initiative_id", "activity_type", "repository", "worktree", "label",
+        "schema", "cwd", "command", "argv", "capability", "shell", "project", "stream",
+        "category", "initiative_id", "activity_type", "repository", "worktree", "label",
         "timeout_seconds", "heartbeat_seconds",
     }
     unknown = set(payload) - allowed
@@ -196,8 +205,10 @@ def _load_request(path: Path) -> dict:
 
     command = payload.get("command")
     argv = payload.get("argv")
-    if bool(command) == bool(argv):
-        raise BridgeError("provide exactly one of command or argv")
+    capability = payload.get("capability")
+    modes = int(bool(command)) + int(bool(argv)) + int(capability is not None)
+    if modes != 1:
+        raise BridgeError("provide exactly one of command, argv or capability")
     if command is not None and (
         not isinstance(command, str) or not command.strip() or len(command) > MAX_COMMAND
     ):
@@ -207,6 +218,19 @@ def _load_request(path: Path) -> dict:
         or not all(isinstance(value, str) and 0 < len(value) <= MAX_ARG for value in argv)
     ):
         raise BridgeError(f"argv must contain 1..{MAX_ARGV} bounded non-empty strings")
+    if capability is not None:
+        if not isinstance(capability, dict):
+            raise BridgeError("capability must be an object")
+        unknown = set(capability) - CAPABILITY_FIELDS
+        if unknown:
+            raise BridgeError(f"unknown capability fields: {sorted(unknown)}")
+        if capability.get("schema") != 1:
+            raise BridgeError("capability schema must be 1")
+        if capability.get("action") not in CAPABILITY_ACTIONS:
+            raise BridgeError("unsupported capability action")
+        encoded = json.dumps(capability, ensure_ascii=False).encode("utf-8")
+        if len(encoded) > MAX_CAPABILITY_BYTES:
+            raise BridgeError("capability request exceeds size limit")
 
     def bounded(name: str, default, limit: int):
         value = payload.get(name, default)
@@ -239,6 +263,7 @@ def _load_request(path: Path) -> dict:
         "cwd": str(cwd.resolve(strict=True)),
         "command": command,
         "argv": argv,
+        "capability": dict(capability) if isinstance(capability, dict) else None,
         "shell": shell,
         "initiative_id": initiative_id,
         "activity_type": activity_type,
