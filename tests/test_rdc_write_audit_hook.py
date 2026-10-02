@@ -1,6 +1,8 @@
 import importlib.util
 from pathlib import Path
+import tempfile
 import unittest
+from unittest import mock
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "src" / "rdc_write_audit_hook.py"
 SPEC = importlib.util.spec_from_file_location("rdc_write_audit_hook", MODULE_PATH)
@@ -45,6 +47,45 @@ export async function killProcess(args) {
         source = hook.PROCESS_IMPORT + "\n" + "export async function killProcess(args) {}\n"
         with self.assertRaises(hook.HookError):
             hook._patch_process(source)
+
+    def test_helper_only_upgrade_reports_changed(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            fs = root / "filesystem-handlers.js"
+            edit = root / "edit.js"
+            process = root / "process.js"
+            helper_source = root / "source-helper.js"
+            helper_target = root / "installed-helper.js"
+            state = root / "state.json"
+            backups = root / "backups"
+            for path in (fs, edit, process):
+                path.write_bytes(b"stable")
+            helper_source.write_bytes(b"new-helper")
+            helper_target.write_bytes(b"old-helper")
+            values = {
+                "CONTROL_ROOT": root,
+                "BACKUP_ROOT": backups,
+                "STATE_FILE": state,
+                "FS_TARGET": fs,
+                "EDIT_TARGET": edit,
+                "PROCESS_TARGET": process,
+                "HELPER_SOURCE": helper_source,
+                "HELPER_TARGET": helper_target,
+            }
+            patches = [mock.patch.object(hook, key, value) for key, value in values.items()]
+            for patcher in patches:
+                patcher.start()
+            try:
+                with mock.patch.object(hook, "_patch_filesystem", side_effect=lambda s: s), \
+                     mock.patch.object(hook, "_patch_edit", side_effect=lambda s: s), \
+                     mock.patch.object(hook, "_patch_process", side_effect=lambda s: s), \
+                     mock.patch.object(hook, "status", return_value={"healthy": True}):
+                    result = hook.ensure()
+            finally:
+                for patcher in reversed(patches):
+                    patcher.stop()
+            self.assertTrue(result["changed"])
+            self.assertEqual(helper_target.read_bytes(), b"new-helper")
 
 
 if __name__ == "__main__":

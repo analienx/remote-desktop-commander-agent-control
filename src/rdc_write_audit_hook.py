@@ -360,7 +360,12 @@ def ensure() -> dict[str, Any]:
         else:
             backups[label] = prior.get(f"{label}_backup")
 
-    _write_atomic(HELPER_TARGET, HELPER_SOURCE.read_bytes(), allow_locked=True)
+    helper_bytes = HELPER_SOURCE.read_bytes()
+    helper_changed = (
+        not HELPER_TARGET.is_file()
+        or HELPER_TARGET.read_bytes() != helper_bytes
+    )
+    _write_atomic(HELPER_TARGET, helper_bytes, allow_locked=True)
     state = {
         "schema": "analienx.rdc-write-audit-hook-state/v1",
         "filesystem_sha256": _sha(FS_TARGET.read_bytes()),
@@ -376,6 +381,7 @@ def ensure() -> dict[str, Any]:
         fs_original != fs_patched
         or edit_original != edit_patched
         or process_original != process_patched
+        or helper_changed
     )
     if not result["healthy"]:
         raise HookError("native write audit hook is not healthy after ensure")
