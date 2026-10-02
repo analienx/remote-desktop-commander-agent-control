@@ -195,6 +195,14 @@ bypass SLRunner.
 
 If SLRunner or the bridge is absent, process execution fails closed. The Guardian keeps
 the signature-anchored hook installed, restarts the RDC agent only when the patch
-changes, and leaves native read operations untouched. The installer retains a
-content-addressed pre-patch backup and refuses destructive rollback after an unrelated
-upstream package change.
+changes, and leaves native read operations untouched.
+
+Native filesystem mutations are covered by the same boundary without converting them
+into shell commands. `write_file`, `edit_block`, `create_directory`, `move_file`, and `write_pdf`
+emit a strict pre-write audit event and a terminal result through the installed
+SLRunner audit helper. File contents and edit search/replace text are never sent to
+the audit ledger. The native-write patch is signature-anchored, independently backed
+up, and included in the Guardian health result.
+
+The installer retains content-addressed pre-patch backups and refuses destructive
+rollback after an unrelated upstream package change.
