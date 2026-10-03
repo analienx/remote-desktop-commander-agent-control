@@ -9,8 +9,10 @@ scheduler, token, or second execution policy here.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -20,7 +22,10 @@ import uuid
 REQUEST_ROOT = Path(r"C:\Workspace\.analienx\rdc-requests")
 WORKSPACE_ROOT = Path(r"C:\Workspace")
 SLRUNNER_ENTRY = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "Analienx" / "SLRunner" / "slrunner.py"
+TASK_ROUTER_ENTRY = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "Analienx" / "TaskRouter" / "task_router.py"
+INITIATIVE_REGISTRY = WORKSPACE_ROOT / ".analienx" / "runner" / "initiatives.json"
 SCHEMA = "analienx.rdc-slrunner-request/v1"
+SAFE_SEGMENT = re.compile(r"[^A-Za-z0-9._-]+")
 MAX_ARGV = 256
 MAX_ARG = 32768
 MAX_COMMAND = 131072
@@ -174,6 +179,170 @@ def _contains(child: Path, parent: Path) -> bool:
         return False
 
 
+def _load_task_router():
+    if not TASK_ROUTER_ENTRY.is_file():
+        raise BridgeError(f"TaskRouter is not installed: {TASK_ROUTER_ENTRY}")
+    parent = str(TASK_ROUTER_ENTRY.parent)
+    if parent not in sys.path:
+        sys.path.insert(0, parent)
+    spec = importlib.util.spec_from_file_location(
+        "analienx_rdc_task_router", TASK_ROUTER_ENTRY
+    )
+    if spec is None or spec.loader is None:
+        raise BridgeError(f"cannot load TaskRouter: {TASK_ROUTER_ENTRY}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    registry = TASK_ROUTER_ENTRY.with_name("projects.yaml")
+    if not registry.is_file():
+        raise BridgeError(f"TaskRouter registry is missing: {registry}")
+    return module, registry
+
+
+def _task_text(request: dict) -> str:
+    command = request.get("command")
+    if isinstance(command, str) and command.strip():
+        return command
+    argv = request.get("argv")
+    if isinstance(argv, list) and argv:
+        return subprocess.list2cmdline([str(value) for value in argv])
+    return ""
+
+
+def _initiative_for(project: str, stream: str | None, cwd: Path) -> str:
+    matches: set[str] = set()
+    try:
+        payload = json.loads(INITIATIVE_REGISTRY.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        payload = {}
+    rows = payload.get("bindings") if isinstance(payload, dict) else None
+    if isinstance(rows, list):
+        for row in rows:
+            if not isinstance(row, dict) or row.get("project") != project:
+                continue
+            if stream and row.get("stream") not in {None, stream}:
+                continue
+            root_raw = row.get("root")
+            initiative = row.get("initiative_id")
+            if not isinstance(root_raw, str) or not isinstance(initiative, str):
+                continue
+            try:
+                root = Path(root_raw)
+                if _contains(cwd, root) or _contains(root, cwd):
+                    matches.add(initiative)
+            except OSError:
+                continue
+    if len(matches) == 1:
+        return next(iter(matches))
+    slug = SAFE_SEGMENT.sub("-", project).strip("-") or "project"
+    if stream:
+        stream_slug = SAFE_SEGMENT.sub("-", stream).strip("-")
+        if stream_slug:
+            slug += "-" + stream_slug
+    return ("adhoc-" + slug)[:120]
+
+
+def _preflight_designation(request: dict) -> dict:
+    if request.get("capability") is not None:
+        return request
+    task = _task_text(request)
+    if not task:
+        raise BridgeError("execution request has no routable task text")
+
+    module, registry = _load_task_router()
+    project = request.get("project")
+    stream = request.get("stream")
+    hint_project = project if isinstance(project, str) and project.strip() else None
+    hint_stream = stream if isinstance(stream, str) and stream.strip() else None
+    try:
+        result = module.route_task(
+            task,
+            registry,
+            hint_project=hint_project,
+            hint_stream=hint_stream,
+            current_cwd=request.get("cwd"),
+        )
+    except Exception as exc:
+        raise BridgeError(f"TaskRouter preflight failed: {exc}") from exc
+    if not isinstance(result, dict):
+        raise BridgeError("TaskRouter returned an invalid designation")
+
+    routing = str(result.get("routing") or "")
+    if routing != "single":
+        if routing == "multi_repo":
+            projects = [
+                str(row.get("project_id"))
+                for row in result.get("projects", [])
+                if isinstance(row, dict) and row.get("project_id")
+            ]
+            detail = ", ".join(projects) or "multiple projects"
+            raise BridgeError(
+                f"execution requires one explicit project/worktree; TaskRouter found: {detail}"
+            )
+        if routing == "project_only":
+            alternatives = result.get("stream", {}).get("alternatives", [])
+            raise BridgeError(
+                "execution project is known but workstream is ambiguous; "
+                f"choose an explicit stream before execution: {alternatives}"
+            )
+        if routing == "worktree_ambiguous":
+            location = result.get("worktree") or {}
+            candidates = [
+                str(row.get("path"))
+                for row in location.get("candidates", [])
+                if isinstance(row, dict) and row.get("path")
+            ]
+            raise BridgeError(
+                "execution project/workstream is known but worktree is ambiguous; "
+                f"choose an explicit cwd/worktree before execution: {candidates}"
+            )
+        raise BridgeError(
+            "execution has no single canonical designation; "
+            f"TaskRouter routing={routing or 'unknown'}"
+        )
+
+    project_id = result.get("project_id")
+    repository = result.get("repository")
+    stream_id = result.get("stream_id")
+    location = result.get("worktree")
+    if not isinstance(project_id, str) or not project_id.strip():
+        raise BridgeError("TaskRouter single route omitted project_id")
+    if not isinstance(location, dict):
+        raise BridgeError("TaskRouter single route omitted worktree selection")
+    cwd_raw = location.get("cwd")
+    root_raw = location.get("worktree_root")
+    if not isinstance(cwd_raw, str) or not isinstance(root_raw, str):
+        raise BridgeError("TaskRouter worktree selection is incomplete")
+    cwd = Path(cwd_raw)
+    worktree = Path(root_raw)
+    if (
+        not cwd.is_dir()
+        or not worktree.is_dir()
+        or not _contains(cwd, worktree)
+        or not _contains(worktree, WORKSPACE_ROOT)
+    ):
+        raise BridgeError("TaskRouter worktree selection escaped the workspace")
+
+    designated = dict(request)
+    designated["cwd"] = str(cwd.resolve(strict=True))
+    designated["worktree"] = str(worktree.resolve(strict=True))
+    designated["project"] = project_id
+    designated["repository"] = (
+        repository if isinstance(repository, str) and repository.strip() else None
+    )
+    designated["stream"] = (
+        stream_id if isinstance(stream_id, str) and stream_id.strip() else None
+    )
+    designated["initiative_id"] = _initiative_for(
+        project_id, designated["stream"], cwd
+    )
+    designated["category"] = "RDC"
+    designated["label"] = (
+        f"[RDC][{project_id}]"
+        + (f"[{designated['stream']}]" if designated["stream"] else "")
+    )[:200]
+    return designated
+
+
 def _load_request(path: Path) -> dict:
     if not REQUEST_ROOT.is_dir():
         raise BridgeError(f"request root is missing: {REQUEST_ROOT}")
@@ -280,7 +449,7 @@ def _load_request(path: Path) -> dict:
 
 
 def execute(request_file: Path) -> int:
-    request = _load_request(request_file)
+    request = _preflight_designation(_load_request(request_file))
     if not SLRUNNER_ENTRY.is_file():
         raise BridgeError(f"thin SLRunner is not installed: {SLRUNNER_ENTRY}")
     REQUEST_ROOT.mkdir(parents=True, exist_ok=True)

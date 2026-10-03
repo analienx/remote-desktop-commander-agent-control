@@ -1,6 +1,7 @@
 import importlib.util
 import json
 from pathlib import Path
+from types import SimpleNamespace
 import tempfile
 import unittest
 from unittest import mock
@@ -24,13 +25,17 @@ class BridgeTests(unittest.TestCase):
         self.runner = root / "SLRunner" / "slrunner.py"
         self.runner.parent.mkdir()
         self.runner.write_text("# test runner\n", encoding="utf-8")
+        self.real_preflight = bridge._preflight_designation
         self.patchers = [
             mock.patch.object(bridge, "REQUEST_ROOT", self.request_root),
             mock.patch.object(bridge, "WORKSPACE_ROOT", self.workspace),
             mock.patch.object(bridge, "SLRUNNER_ENTRY", self.runner),
+            mock.patch.object(
+                bridge, "_preflight_designation", side_effect=lambda request: request
+            ),
         ]
-        for patcher in self.patchers:
-            patcher.start()
+        started = [patcher.start() for patcher in self.patchers]
+        self.preflight_mock = started[-1]
 
     def tearDown(self):
         for patcher in reversed(self.patchers):
@@ -158,6 +163,120 @@ class BridgeTests(unittest.TestCase):
                     "command": "whoami",
                 },
             ))
+
+    def test_preflight_single_route_rewrites_to_canonical_worktree(self):
+        canonical = self.workspace / "worktrees" / "cinema-canonical"
+        canonical.mkdir(parents=True)
+        request = bridge._load_request(self.request(
+            cwd=str(self.workspace),
+            worktree=str(self.workspace),
+            project=None,
+            stream=None,
+            initiative_id="unclassified-workspace",
+            category="RDC-UNCLASSIFIED",
+            command="launch FERAL keyframe generation",
+        ))
+        router = SimpleNamespace(route_task=lambda *args, **kwargs: {
+            "routing": "single",
+            "project_id": "cinema",
+            "repository": "analienx/cinema",
+            "stream_id": "autonomous-production",
+            "worktree": {
+                "cwd": str(canonical),
+                "worktree_root": str(canonical),
+                "basis": "tiny_jev_location",
+            },
+        })
+        with mock.patch.object(bridge, "_load_task_router", return_value=(router, Path("registry"))), \
+             mock.patch.object(bridge, "INITIATIVE_REGISTRY", self.workspace / "missing.json"):
+            result = self.real_preflight(request)
+        self.assertEqual(result["project"], "cinema")
+        self.assertEqual(result["stream"], "autonomous-production")
+        self.assertEqual(Path(result["cwd"]), canonical.resolve())
+        self.assertEqual(Path(result["worktree"]), canonical.resolve())
+        self.assertEqual(result["initiative_id"], "adhoc-cinema-autonomous-production")
+        self.assertEqual(result["category"], "RDC")
+
+    def test_preflight_blocks_multi_repo_before_execution(self):
+        request = bridge._load_request(self.request(
+            cwd=str(self.workspace),
+            worktree=str(self.workspace),
+            project=None,
+            stream=None,
+            initiative_id="unclassified-workspace",
+            command="inspect bseed PM role matrix",
+        ))
+        router = SimpleNamespace(route_task=lambda *args, **kwargs: {
+            "routing": "multi_repo",
+            "projects": [
+                {"project_id": "bseed"},
+                {"project_id": "bseed-ts0726-dimmer"},
+            ],
+        })
+        with mock.patch.object(bridge, "_load_task_router", return_value=(router, Path("registry"))):
+            with self.assertRaisesRegex(bridge.BridgeError, "one explicit project/worktree"):
+                self.real_preflight(request)
+
+    def test_preflight_blocks_ambiguous_stream(self):
+        request = bridge._load_request(self.request(
+            project=None,
+            stream=None,
+            initiative_id="unclassified-workspace",
+        ))
+        router = SimpleNamespace(route_task=lambda *args, **kwargs: {
+            "routing": "project_only",
+            "stream": {"alternatives": ["one", "two"]},
+        })
+        with mock.patch.object(bridge, "_load_task_router", return_value=(router, Path("registry"))):
+            with self.assertRaisesRegex(bridge.BridgeError, "workstream is ambiguous"):
+                self.real_preflight(request)
+
+    def test_preflight_blocks_ambiguous_worktree(self):
+        request = bridge._load_request(self.request(
+            project=None,
+            stream=None,
+            initiative_id="unclassified-workspace",
+        ))
+        router = SimpleNamespace(route_task=lambda *args, **kwargs: {
+            "routing": "worktree_ambiguous",
+            "worktree": {
+                "candidates": [
+                    {"path": r"C:\Workspace\repos\cinema"},
+                    {"path": r"C:\Workspace\worktrees\cinema-feral"},
+                ]
+            },
+        })
+        with mock.patch.object(bridge, "_load_task_router", return_value=(router, Path("registry"))):
+            with self.assertRaisesRegex(bridge.BridgeError, "worktree is ambiguous"):
+                self.real_preflight(request)
+
+    def test_typed_read_capability_skips_execution_designation(self):
+        request = bridge._load_request(self.request(
+            command=None,
+            capability={"schema": 1, "action": "processes"},
+            project=None,
+            stream=None,
+            initiative_id="unclassified-workspace",
+        ))
+        with mock.patch.object(
+            bridge, "_load_task_router", side_effect=AssertionError("read must not route")
+        ):
+            result = self.real_preflight(request)
+        self.assertEqual(result["capability"]["action"], "processes")
+
+    def test_failed_preflight_never_spawns_slrunner(self):
+        path = self.request(
+            cwd=str(self.workspace),
+            worktree=str(self.workspace),
+            project=None,
+            stream=None,
+            initiative_id="unclassified-workspace",
+        )
+        self.preflight_mock.side_effect = bridge.BridgeError("designation required")
+        with mock.patch.object(bridge.subprocess, "Popen") as popen:
+            with self.assertRaisesRegex(bridge.BridgeError, "designation required"):
+                bridge.execute(path)
+        popen.assert_not_called()
 
     def test_missing_initiative_is_rejected(self):
         with self.assertRaisesRegex(bridge.BridgeError, "initiative_id"):

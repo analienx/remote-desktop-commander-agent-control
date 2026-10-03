@@ -178,10 +178,20 @@ routed through the thin per-user SLRunner once it is installed.
 
 The caller does not construct a wrapper command. The Desktop Commander hook preserves
 the original command, shell and timeout, extracts a leading `cmd.exe`
-`cd /d <workspace> && ...` into the Runner cwd when present, writes one UUID request
-under `C:\Workspace\.analienx\rdc-requests`, and rewrites only the internal
-execution to the fixed Python bridge. The bridge then invokes the installed
-`%LOCALAPPDATA%\Analienx\SLRunner\slrunner.py` with inherited stdin/stdout/stderr.
+`cd /d <workspace> && ...` into the proposed cwd, writes one UUID request under
+`C:\Workspace\.analienx\rdc-requests`, and rewrites only the internal execution
+to the fixed Python bridge.
+
+**Before any child process starts**, the bridge asks the installed TaskRouter for one
+canonical project/workstream/worktree designation. Explicit project hints win, then
+the current cwd/worktree owner, then deterministic command evidence, then TinyJEV.
+A unique active initiative binding is the fallback when project+stream are known but
+location semantics are tied. Multi-repo, ambiguous-stream, ambiguous-worktree, and
+unregistered-repo results fail closed and no SLRunner child is spawned. A successful
+designation rewrites cwd/worktree to the selected canonical checkout and only then
+invokes `%LOCALAPPDATA%\Analienx\SLRunner\slrunner.py` with inherited
+stdin/stdout/stderr. Typed read capabilities are exempt because they cannot execute
+arbitrary shell commands or mutate the workspace.
 
 There is no loopback Runner service, bearer token, second scheduler, mutation broker,
 or approval engine in this path. SLRunner owns only process lifetime, catastrophic
