@@ -249,6 +249,41 @@ class BridgeTests(unittest.TestCase):
         })
         popen.assert_not_called()
 
+    def test_single_route_with_required_clarification_never_spawns_runner(self):
+        path = self.request(project=None, stream=None, initiative_id="unclassified-workspace")
+        router = SimpleNamespace(route_task=lambda *args, **kwargs: {
+            "routing": "single", "project_id": "cinema",
+            "worktree": {"cwd": str(self.cwd), "worktree_root": str(self.cwd)},
+            "clarification": {"required": True, "question": "Choose a worktree"},
+        })
+        self.preflight_mock.side_effect = self.real_preflight
+        with mock.patch.object(bridge, "_load_task_router", return_value=(router, Path("registry"))):
+            with mock.patch.object(bridge.subprocess, "Popen") as popen:
+                with self.assertRaisesRegex(bridge.BridgeError, "ROUTING_CLARIFICATION_REQUIRED"):
+                    bridge.execute(path)
+        popen.assert_not_called()
+
+    def test_router_selection_rejects_relative_and_file_paths(self):
+        selected_file = self.workspace / "not-a-directory"
+        selected_file.write_text("fixture")
+        for cwd, root in [
+            (".", str(self.cwd)), (str(self.cwd), "."),
+            (str(selected_file), str(self.workspace)),
+            (str(selected_file), str(selected_file)),
+        ]:
+            with self.subTest(cwd=cwd, root=root):
+                path = self.request(project=None, stream=None, initiative_id="unclassified-workspace")
+                router = SimpleNamespace(route_task=lambda *args, **kwargs: {
+                    "routing": "single", "project_id": "cinema",
+                    "worktree": {"cwd": cwd, "worktree_root": root},
+                })
+                self.preflight_mock.side_effect = self.real_preflight
+                with mock.patch.object(bridge, "_load_task_router", return_value=(router, Path("registry"))):
+                    with mock.patch.object(bridge.subprocess, "Popen") as popen:
+                        with self.assertRaises(bridge.BridgeError):
+                            bridge.execute(path)
+                popen.assert_not_called()
+
     def test_preflight_blocks_ambiguous_stream(self):
         request = bridge._load_request(self.request(
             project=None,
