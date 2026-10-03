@@ -268,6 +268,16 @@ def _preflight_designation(request: dict) -> dict:
 
     routing = str(result.get("routing") or "")
     if routing != "single":
+        clarification = result.get("clarification")
+        if isinstance(clarification, dict) and clarification.get("required") is True:
+            raise BridgeError(
+                "ROUTING_CLARIFICATION_REQUIRED "
+                + json.dumps({
+                    "event": "ROUTING_CLARIFICATION_REQUIRED",
+                    "routing": routing or "unknown",
+                    "clarification": clarification,
+                }, ensure_ascii=False, separators=(",", ":"))
+            )
         if routing == "multi_repo":
             projects = [
                 str(row.get("project_id"))

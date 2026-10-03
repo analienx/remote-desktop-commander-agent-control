@@ -193,6 +193,12 @@ invokes `%LOCALAPPDATA%\Analienx\SLRunner\slrunner.py` with inherited
 stdin/stdout/stderr. Typed read capabilities are exempt because they cannot execute
 arbitrary shell commands or mutate the workspace.
 
+A command that mentions an absolute repo/helper path without a leading `cd` is
+forwarded to that same preflight; path mentions alone do not select a cwd or grant
+execution authority. When TaskRouter requires clarification, the bridge returns
+`ROUTING_CLARIFICATION_REQUIRED` with the question, candidates and answer contract.
+Resolve the missing ownership fact and rerun routing through the normal Runner path.
+
 There is no loopback Runner service, bearer token, second scheduler, mutation broker,
 or approval engine in this path. SLRunner owns only process lifetime, catastrophic
 accident guard, heartbeat, logs and structured events. Project-specific safety stays

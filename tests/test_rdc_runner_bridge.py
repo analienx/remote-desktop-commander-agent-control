@@ -217,6 +217,38 @@ class BridgeTests(unittest.TestCase):
             with self.assertRaisesRegex(bridge.BridgeError, "one explicit project/worktree"):
                 self.real_preflight(request)
 
+    def test_required_clarification_survives_bridge_and_never_spawns_runner(self):
+        path = self.request(
+            cwd=str(self.workspace), worktree=str(self.workspace),
+            project=None, stream=None, initiative_id="unclassified-workspace",
+        )
+        clarification = {
+            "required": True,
+            "kind": "registration_or_mapping",
+            "requested_task": "inspect demo",
+            "question": "Map this repo to an existing project or register it?",
+            "candidates": [{"repository": "analienx/demo"}],
+            "required_fields": ["decision", "project_id"],
+            "answer_contract": {"decision": ["map", "register"]},
+            "resume_instruction": "Rerun routing with the selected project.",
+        }
+        router = SimpleNamespace(route_task=lambda *args, **kwargs: {
+            "routing": "needs_registration", "clarification": clarification,
+        })
+        self.preflight_mock.side_effect = self.real_preflight
+        with mock.patch.object(bridge, "_load_task_router", return_value=(router, Path("registry"))):
+            with mock.patch.object(bridge.subprocess, "Popen") as popen:
+                with self.assertRaises(bridge.BridgeError) as ctx:
+                    bridge.execute(path)
+        prefix, encoded = str(ctx.exception).split(" ", 1)
+        self.assertEqual(prefix, "ROUTING_CLARIFICATION_REQUIRED")
+        self.assertEqual(json.loads(encoded), {
+            "event": "ROUTING_CLARIFICATION_REQUIRED",
+            "routing": "needs_registration",
+            "clarification": clarification,
+        })
+        popen.assert_not_called()
+
     def test_preflight_blocks_ambiguous_stream(self):
         request = bridge._load_request(self.request(
             project=None,
