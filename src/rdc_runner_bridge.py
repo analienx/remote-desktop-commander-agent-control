@@ -267,7 +267,18 @@ def _preflight_designation(request: dict) -> dict:
         raise BridgeError("TaskRouter returned an invalid designation")
 
     routing = str(result.get("routing") or "")
-    if routing != "single":
+    clarification = result.get("clarification")
+    needs_clarification = isinstance(clarification, dict) and clarification.get("required") is True
+    if routing != "single" or needs_clarification:
+        if needs_clarification:
+            raise BridgeError(
+                "ROUTING_CLARIFICATION_REQUIRED "
+                + json.dumps({
+                    "event": "ROUTING_CLARIFICATION_REQUIRED",
+                    "routing": routing or "unknown",
+                    "clarification": clarification,
+                }, ensure_ascii=False, separators=(",", ":"))
+            )
         if routing == "multi_repo":
             projects = [
                 str(row.get("project_id"))
@@ -314,6 +325,8 @@ def _preflight_designation(request: dict) -> dict:
         raise BridgeError("TaskRouter worktree selection is incomplete")
     cwd = Path(cwd_raw)
     worktree = Path(root_raw)
+    if not cwd.is_absolute() or not worktree.is_absolute():
+        raise BridgeError("TaskRouter worktree selection must use absolute directories")
     if (
         not cwd.is_dir()
         or not worktree.is_dir()

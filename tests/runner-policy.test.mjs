@@ -290,18 +290,23 @@ test('leading cmd cd /d becomes runner cwd instead of wrapper logic', async () =
   }
 });
 
-test('repo-scoped process commands without explicit cwd fail instead of becoming unclassified', async () => {
+test('repo path arguments reach canonical bridge preflight without inventing ownership', async () => {
   const f = fixture();
   try {
     const repo = path.join(f.workspace, 'worktrees', 'cinema-feral');
     fs.mkdirSync(repo, { recursive: true });
-    await assert.rejects(
-      routeAnalienxRunner(
-        { command: 'python "' + path.join(repo, 'tool.py') + '"', shell: 'cmd.exe' },
-        'cmd.exe',
-      ),
-      /ANALIENX_RDC_CONTEXT_REQUIRED/,
-    );
+    for (const shell of ['cmd.exe', 'powershell.exe']) {
+      const command = 'python "' + path.join(repo, 'tool.py') + '" --check';
+      const routed = await routeAnalienxRunner({ command, shell }, shell);
+      const request = JSON.parse(fs.readFileSync(routed.requestPath, 'utf8'));
+      assert.match(routed.command, /rdc_runner_bridge\.py/);
+      assert.equal(request.command, command);
+      assert.equal(request.shell, shell);
+      assert.equal(request.cwd, f.workspace);
+      assert.match(request.initiative_id, /^unclassified-/);
+      assert.equal(request.project, null);
+      assert.equal(request.category, 'RDC-UNCLASSIFIED');
+    }
   } finally {
     f.close();
   }
@@ -399,6 +404,20 @@ test('split helper leaves out-of-workspace cd intact', () => {
       splitCmdWorkingDirectory(original, 'cmd.exe'),
       { cwd: f.workspace, command: original },
     );
+  } finally {
+    f.close();
+  }
+});
+
+test('split helper preserves relative and shell-expanded cd commands', () => {
+  const f = fixture();
+  try {
+    for (const cwd of ['worktrees/repo', '%REPO_ROOT%', '!REPO_ROOT!', f.workspace + '/caret^repo']) {
+      const original = 'cd /d "' + cwd + '" && python task.py';
+      assert.deepEqual(splitCmdWorkingDirectory(original, 'cmd.exe'), { cwd: f.workspace, command: original });
+    }
+    const original = 'cd\n/d "' + f.workspace + '" && python task.py';
+    assert.deepEqual(splitCmdWorkingDirectory(original, 'cmd.exe'), { cwd: f.workspace, command: original });
   } finally {
     f.close();
   }

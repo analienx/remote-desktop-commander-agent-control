@@ -89,12 +89,12 @@ export function splitCmdWorkingDirectory(command, shell) {
   if (base !== 'cmd.exe' && base !== 'cmd') {
     return { cwd: workspaceRoot(), command };
   }
-  const match = command.match(/^\s*cd\s+\/d\s+(?:"([^"]+)"|([^&]+?))\s*&&\s*([\s\S]+)$/i);
+  const match = command.match(/^[^\S\r\n]*cd[^\S\r\n]+\/d[^\S\r\n]+(?:"([^"\r\n]+)"|([^&\r\n]+?))[^\S\r\n]*&&[^\S\r\n]*([\s\S]+)$/i);
   if (!match) {
     return { cwd: workspaceRoot(), command };
   }
   const cwd = String(match[1] || match[2] || '').trim();
-  if (!insideWorkspace(cwd)) {
+  if (!path.win32.isAbsolute(cwd) || /[%!^\r\n]/.test(cwd) || !insideWorkspace(cwd)) {
     return { cwd: workspaceRoot(), command };
   }
   return { cwd: path.win32.resolve(cwd), command: match[3] };
@@ -256,16 +256,9 @@ export async function routeAnalienxRunner(args, resolvedShell) {
       );
     }
   }
-  const normalizedCommand = original.replaceAll('/', '\\').toLowerCase();
-  const referencesRepoScope =
-    normalizedCommand.includes(workspace + '\\worktrees\\') ||
-    normalizedCommand.includes(workspace + '\\repos\\');
-  if (splitCwd === workspace && referencesRepoScope) {
-    throw new Error(
-      'ANALIENX_RDC_CONTEXT_REQUIRED: repo-scoped RDC process commands must start with ' +
-      'cd /d "<registered worktree>" && so Runner attribution is explicit'
-    );
-  }
+  // A repo path may be an input, helper script, or diagnostic target. It is not
+  // evidence of an execution cwd. Forward unresolved ownership to the bridge's
+  // canonical TaskRouter preflight, which must succeed before any child starts.
   const initiative = (
     capability &&
     splitCwd === workspace &&
