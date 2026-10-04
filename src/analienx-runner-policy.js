@@ -229,7 +229,7 @@ const TASK_CONTEXT_LIMITS = {
   context_id: 256, objective: 512, issue: 256, goal: 256,
   initiative_id: 120, activity: 120,
 };
-const TASK_IDENTITY_KEYS = ['goal', 'issue', 'context_id'];
+const TASK_IDENTITY_KEYS = ['goal', 'issue', 'context_id', 'initiative_id'];
 
 function parseTaskContext(args) {
   const flatId = args?.context_id;
@@ -276,7 +276,15 @@ function isSyntheticInitiative(value) {
 }
 
 function hasTaskIdentityKeys(taskContext) {
-  return taskContext != null && TASK_IDENTITY_KEYS.some((key) => taskContext[key] != null);
+  return taskContext != null && TASK_IDENTITY_KEYS.some((key) => {
+    if (taskContext[key] == null) return false;
+    // S11: an explicit non-synthetic initiative_id is itself task
+    // identity, so a new task never inherits the framed binding's
+    // activity label as a declaration. Synthetic IDs mean "no real
+    // task" and stay non-identifying.
+    if (key === 'initiative_id') return !isSyntheticInitiative(taskContext[key]);
+    return true;
+  });
 }
 
 export async function routeAnalienxRunner(args, resolvedShell) {
