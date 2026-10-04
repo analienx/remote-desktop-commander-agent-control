@@ -187,14 +187,16 @@ class BridgeTests(unittest.TestCase):
                 "basis": "tiny_jev_location",
             },
         })
-        with mock.patch.object(bridge, "_load_task_router", return_value=(router, Path("registry"))), \
-             mock.patch.object(bridge, "INITIATIVE_REGISTRY", self.workspace / "missing.json"):
+        with mock.patch.object(bridge, "_load_task_router", return_value=(router, Path("registry"))):
             result = self.real_preflight(request)
         self.assertEqual(result["project"], "cinema")
         self.assertEqual(result["stream"], "autonomous-production")
         self.assertEqual(Path(result["cwd"]), canonical.resolve())
         self.assertEqual(Path(result["worktree"]), canonical.resolve())
-        self.assertEqual(result["initiative_id"], "adhoc-cinema-autonomous-production")
+        # Contract change (Runner redesign A1/A2): the bridge designates
+        # ownership but never synthesizes a task bucket. Context-free work is
+        # visibly Unassigned; SLRunner attributes it from task context.
+        self.assertEqual(result["initiative_id"], "unassigned")
         self.assertEqual(result["category"], "RDC")
 
     def test_preflight_blocks_multi_repo_before_execution(self):
@@ -358,6 +360,78 @@ class BridgeTests(unittest.TestCase):
         }), encoding="utf-8")
         with self.assertRaisesRegex(bridge.BridgeError, "fixed RDC request root"):
             bridge._load_request(outside)
+
+    def test_preflight_preserves_explicit_initiative(self):
+        canonical = self.workspace / "worktrees" / "cinema-canonical"
+        canonical.mkdir(parents=True)
+        request = bridge._load_request(self.request(
+            cwd=str(self.workspace),
+            worktree=str(self.workspace),
+            project=None,
+            stream=None,
+            initiative_id="feral-60s-trailer",
+        ))
+        router = SimpleNamespace(route_task=lambda *args, **kwargs: {
+            "routing": "single",
+            "project_id": "cinema",
+            "repository": "analienx/cinema",
+            "stream_id": "autonomous-production",
+            "worktree": {
+                "cwd": str(canonical),
+                "worktree_root": str(canonical),
+            },
+        })
+        with mock.patch.object(bridge, "_load_task_router", return_value=(router, Path("registry"))):
+            result = self.real_preflight(request)
+        self.assertEqual(result["initiative_id"], "feral-60s-trailer")
+        self.assertEqual(result["project"], "cinema")
+
+    def test_task_context_initiative_wins_over_synthetic_top_level(self):
+        canonical = self.workspace / "worktrees" / "cinema-canonical"
+        canonical.mkdir(parents=True)
+        request = bridge._load_request(self.request(
+            cwd=str(self.workspace),
+            worktree=str(self.workspace),
+            project=None,
+            stream=None,
+            initiative_id="unclassified-workspace",
+            task_context={"initiative_id": "explicit-42", "goal": "goal-42"},
+        ))
+        router = SimpleNamespace(route_task=lambda *args, **kwargs: {
+            "routing": "single",
+            "project_id": "cinema",
+            "worktree": {
+                "cwd": str(canonical),
+                "worktree_root": str(canonical),
+            },
+        })
+        with mock.patch.object(bridge, "_load_task_router", return_value=(router, Path("registry"))):
+            result = self.real_preflight(request)
+        self.assertEqual(result["initiative_id"], "explicit-42")
+
+    def test_task_context_is_validated_merged_and_forwarded(self):
+        req = bridge._load_request(self.request(
+            task_context={"issue": "analienx/config#36", "objective": "  spaced  "},
+            context_id="goal-flat-7",
+        ))
+        self.assertEqual(req["task_context"], {
+            "issue": "analienx/config#36",
+            "objective": "spaced",
+            "context_id": "goal-flat-7",
+        })
+        with self.assertRaisesRegex(bridge.BridgeError, "unknown task_context field"):
+            bridge._load_request(self.request(task_context={"bogus": "x"}))
+        with self.assertRaisesRegex(bridge.BridgeError, "stable slug"):
+            bridge._load_request(self.request(
+                task_context={"initiative_id": "not a slug!"}))
+        with self.assertRaisesRegex(bridge.BridgeError, "conflicts"):
+            bridge._load_request(self.request(
+                task_context={"context_id": "goal-a"}, context_id="goal-b"))
+        with self.assertRaisesRegex(bridge.BridgeError, "conflicting initiative"):
+            bridge._load_request(self.request(
+                initiative_id="request-says-a",
+                task_context={"initiative_id": "context-says-b"},
+            ))
 
     def test_missing_slrunner_fails_closed(self):
         self.runner.unlink()

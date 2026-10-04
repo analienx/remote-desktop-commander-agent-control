@@ -3,6 +3,9 @@ import assert from 'node:assert/strict';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { fileURLToPath } from 'url';
+
+const HERE = path.dirname(fileURLToPath(import.meta.url));
 import {
   routeAnalienxRunner,
   splitCmdWorkingDirectory,
@@ -63,7 +66,7 @@ test('ordinary process command is transparently routed', async () => {
     assert.equal(request.shell, 'cmd.exe');
     assert.equal(request.cwd, f.workspace);
     assert.equal(request.timeout_seconds, 86400);
-    assert.match(request.initiative_id, /^unclassified-/);
+    assert.equal(request.initiative_id, 'unassigned');
     assert.equal(request.category, 'RDC-UNCLASSIFIED');
   } finally {
     f.close();
@@ -171,7 +174,7 @@ test('capability options reject unknown fields and pseudo-command mismatch', asy
   }
 });
 
-test('repo index removes unnecessary unclassified worktree buckets', async () => {
+test('repo index keeps the project with a visible Unassigned initiative', async () => {
   const f = fixture();
   try {
     const repo = path.join(f.workspace, 'worktrees', 'config-muse-goals');
@@ -191,7 +194,9 @@ test('repo index removes unnecessary unclassified worktree buckets', async () =>
       'cmd.exe',
     );
     const request = JSON.parse(fs.readFileSync(routed.requestPath, 'utf8'));
-    assert.equal(request.initiative_id, 'adhoc-supervisor-control-plane');
+    // Contract change (Runner redesign A1/A2): ownership without task
+    // context is visibly Unassigned, never a synthesized adhoc bucket.
+    assert.equal(request.initiative_id, 'unassigned');
     assert.equal(request.project, 'supervisor-control-plane');
     assert.equal(request.repository, 'analienx/config');
     assert.equal(request.category, 'RDC');
@@ -213,7 +218,7 @@ test('oversized repo index fails closed to visible unclassified routing', async 
       'cmd.exe',
     );
     const request = JSON.parse(fs.readFileSync(routed.requestPath, 'utf8'));
-    assert.match(request.initiative_id, /^unclassified-/);
+    assert.equal(request.initiative_id, 'unassigned');
     assert.equal(request.project, null);
     assert.equal(request.category, 'RDC-UNCLASSIFIED');
   } finally {
@@ -303,7 +308,7 @@ test('repo path arguments reach canonical bridge preflight without inventing own
       assert.equal(request.command, command);
       assert.equal(request.shell, shell);
       assert.equal(request.cwd, f.workspace);
-      assert.match(request.initiative_id, /^unclassified-/);
+      assert.equal(request.initiative_id, 'unassigned');
       assert.equal(request.project, null);
       assert.equal(request.category, 'RDC-UNCLASSIFIED');
     }
@@ -330,7 +335,7 @@ test('malformed or out-of-workspace initiative binding is ignored', async () => 
     const command = 'cd /d "' + repo + '" && git status';
     const routed = await routeAnalienxRunner({ command, shell: 'cmd.exe' }, 'cmd.exe');
     const request = JSON.parse(fs.readFileSync(routed.requestPath, 'utf8'));
-    assert.match(request.initiative_id, /^unclassified-/);
+    assert.equal(request.initiative_id, 'unassigned');
     assert.equal(request.category, 'RDC-UNCLASSIFIED');
   } finally {
     f.close();
@@ -393,6 +398,171 @@ test('internal bridge cannot be manually nested', async () => {
     );
   } finally {
     f.close();
+  }
+});
+
+test('explicit task_context initiative wins over the worktree binding', async () => {
+  const f = fixture();
+  try {
+    const repo = path.join(f.workspace, 'worktrees', 'shared');
+    fs.mkdirSync(repo, { recursive: true });
+    fs.mkdirSync(path.dirname(f.initiatives), { recursive: true });
+    fs.writeFileSync(f.initiatives, JSON.stringify({
+      schema: 1,
+      bindings: [{ root: repo, initiative_id: 'older-task', project: 'cinema' }],
+    }));
+    const routed = await routeAnalienxRunner({
+      command: 'cd /d "' + repo + '" && node tool.mjs --check',
+      shell: 'cmd.exe',
+      task_context: { initiative_id: 'fresh-task-42', goal: 'goal-fresh-42' },
+    }, 'cmd.exe');
+    const request = JSON.parse(fs.readFileSync(routed.requestPath, 'utf8'));
+    assert.equal(request.initiative_id, 'fresh-task-42');
+    assert.equal(request.project, 'cinema');
+    assert.equal(request.category, 'RDC');
+    assert.deepEqual(request.task_context, { initiative_id: 'fresh-task-42', goal: 'goal-fresh-42' });
+  } finally {
+    f.close();
+  }
+});
+
+test('task identity keys without an id defer to the catalog instead of the binding', async () => {
+  const f = fixture();
+  try {
+    const repo = path.join(f.workspace, 'worktrees', 'shared');
+    fs.mkdirSync(repo, { recursive: true });
+    fs.mkdirSync(path.dirname(f.initiatives), { recursive: true });
+    fs.writeFileSync(f.initiatives, JSON.stringify({
+      schema: 1,
+      bindings: [{ root: repo, initiative_id: 'older-task', project: 'cinema' }],
+    }));
+    const routed = await routeAnalienxRunner({
+      command: 'cd /d "' + repo + '" && node tool.mjs --check',
+      shell: 'cmd.exe',
+      task_context: { goal: 'goal-fresh-task' },
+    }, 'cmd.exe');
+    const request = JSON.parse(fs.readFileSync(routed.requestPath, 'utf8'));
+    assert.equal(request.initiative_id, 'unassigned');
+    assert.equal(request.project, 'cinema');
+    assert.deepEqual(request.task_context, { goal: 'goal-fresh-task' });
+  } finally {
+    f.close();
+  }
+});
+
+test('flat context_id merges into the forwarded task context', async () => {
+  const f = fixture();
+  try {
+    const routed = await routeAnalienxRunner(
+      { command: 'git status', shell: 'cmd.exe', context_id: 'goal-flat-7' },
+      'cmd.exe',
+    );
+    const request = JSON.parse(fs.readFileSync(routed.requestPath, 'utf8'));
+    assert.equal(request.initiative_id, 'unassigned');
+    assert.deepEqual(request.task_context, { context_id: 'goal-flat-7' });
+  } finally {
+    f.close();
+  }
+});
+
+test('malformed task context fails closed', async () => {
+  const f = fixture();
+  try {
+    await assert.rejects(
+      routeAnalienxRunner(
+        { command: 'git status', shell: 'cmd.exe', task_context: { initiative_id: 'not a slug!' } },
+        'cmd.exe',
+      ),
+      /ANALIENX_RDC_CONTEXT_INVALID/,
+    );
+    await assert.rejects(
+      routeAnalienxRunner(
+        { command: 'git status', shell: 'cmd.exe', task_context: { bogus: 'x' } },
+        'cmd.exe',
+      ),
+      /ANALIENX_RDC_CONTEXT_INVALID/,
+    );
+    await assert.rejects(
+      routeAnalienxRunner(
+        { command: 'git status', shell: 'cmd.exe', task_context: { context_id: 'goal-a' }, context_id: 'goal-b' },
+        'cmd.exe',
+      ),
+      /ANALIENX_RDC_CONTEXT_INVALID/,
+    );
+  } finally {
+    f.close();
+  }
+});
+
+test('explicit task activity wins over the binding default', async () => {
+  const f = fixture();
+  try {
+    const repo = path.join(f.workspace, 'worktrees', 'cinema-feral');
+    fs.mkdirSync(repo, { recursive: true });
+    fs.mkdirSync(path.dirname(f.initiatives), { recursive: true });
+    fs.writeFileSync(f.initiatives, JSON.stringify({
+      schema: 1,
+      bindings: [{ root: repo, initiative_id: 'feral-60s-trailer', project: 'cinema', activity_type: 'keyframe-generation' }],
+    }));
+    const routed = await routeAnalienxRunner({
+      command: 'cd /d "' + repo + '" && node tool.mjs --check',
+      shell: 'cmd.exe',
+      task_context: { activity: 'trailer-edit-review' },
+    }, 'cmd.exe');
+    const request = JSON.parse(fs.readFileSync(routed.requestPath, 'utf8'));
+    assert.equal(request.activity_type, 'trailer-edit-review');
+  } finally {
+    f.close();
+  }
+});
+
+test('work-context conformance fixtures agree with the shared rulebook', async () => {
+  const doc = JSON.parse(fs.readFileSync(
+    path.join(HERE, 'fixtures', 'work-context', 'v1', 'cases.json'), 'utf8'));
+  assert.equal(doc.version, 'work-context-conformance/v1');
+  for (const kase of doc.cases) {
+    const f = fixture();
+    try {
+      const workdir = path.join(f.workspace, 'worktrees', 'case');
+      fs.mkdirSync(workdir, { recursive: true });
+      if (kase.bindings.length > 0) {
+        fs.mkdirSync(path.dirname(f.initiatives), { recursive: true });
+        fs.writeFileSync(f.initiatives, JSON.stringify({
+          schema: 1,
+          bindings: kase.bindings.map((b) => ({ ...b, root: b.root.replace('<workdir>', workdir) })),
+        }));
+      }
+      if (kase.repo_index.length > 0) {
+        fs.mkdirSync(path.dirname(f.repoIndex), { recursive: true });
+        fs.writeFileSync(f.repoIndex, JSON.stringify({
+          schema: 1,
+          entries: kase.repo_index.map((e) => ({ ...e, root: e.root.replace('<workdir>', workdir) })),
+        }));
+      }
+      const command = kase.use_cd ? 'cd /d "' + workdir + '" && ' + kase.command : kase.command;
+      const args = { command, shell: 'cmd.exe' };
+      if (kase.task_context) args.task_context = kase.task_context;
+      if (kase.context_id) args.context_id = kase.context_id;
+      const expected = kase.expect_policy;
+      if (expected.throws) {
+        await assert.rejects(routeAnalienxRunner(args, 'cmd.exe'), new RegExp(expected.throws));
+        continue;
+      }
+      const routed = await routeAnalienxRunner(args, 'cmd.exe');
+      const request = JSON.parse(fs.readFileSync(routed.requestPath, 'utf8'));
+      assert.equal(request.initiative_id, expected.initiative_id, kase.name);
+      assert.equal(request.project, expected.project, kase.name);
+      assert.equal(request.category, expected.category, kase.name);
+      if (kase.task_context || kase.context_id) {
+        const want = { ...(kase.task_context || {}) };
+        if (kase.context_id) want.context_id = kase.context_id;
+        assert.deepEqual(request.task_context, want, kase.name);
+      } else {
+        assert.equal(request.task_context, undefined, kase.name);
+      }
+    } finally {
+      f.close();
+    }
   }
 });
 

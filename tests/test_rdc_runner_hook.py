@@ -159,6 +159,10 @@ class HookTests(unittest.TestCase):
         self.assertIn(hook.SCHEMA_MARKER, schema_patched)
         self.assertIn("options: z.object({", schema_patched)
         self.assertIn("'read_many'", schema_patched)
+        self.assertIn(hook.SCHEMA_CONTEXT_MARKER, schema_patched)
+        self.assertIn("context_id: z.string().min(1).max(256).optional()", schema_patched)
+        self.assertIn("task_context: z.object({", schema_patched)
+        self.assertIn("objective: z.string().min(1).max(512).optional()", schema_patched)
         second = hook.ensure()
         self.assertFalse(second["changed"])
         self.policy_source.write_text(
@@ -206,6 +210,20 @@ class HookTests(unittest.TestCase):
         hook.uninstall()
         self.assertEqual(self.target.read_text(encoding="utf-8"), self.original)
         self.assertEqual(self.schema_target.read_text(encoding="utf-8"), self.schema_original)
+
+    def test_upgrade_adds_task_context_to_options_only_install(self):
+        legacy = self.schema_original.replace(
+            hook.SCHEMA_ANCHOR,
+            hook.SCHEMA_ANCHOR + "\n" + hook.SCHEMA_OPTIONS_BLOCK.rstrip("\n"),
+            1,
+        )
+        self.schema_target.write_bytes(legacy.encode("utf-8"))
+        result = hook.ensure()
+        self.assertTrue(result["healthy"])
+        patched = self.schema_target.read_text(encoding="utf-8")
+        self.assertIn(hook.SCHEMA_MARKER, patched)
+        self.assertIn(hook.SCHEMA_CONTEXT_MARKER, patched)
+        self.assertFalse(hook.ensure()["changed"])
 
     def test_upgrade_refuses_unknown_process_source_drift(self):
         first = hook.ensure()

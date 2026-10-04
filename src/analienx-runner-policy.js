@@ -158,9 +158,10 @@ function resolveInitiativeContext(cwd, command = '') {
           .sort((a, b) => b.root.length - a.root.length);
         if (matches.length > 0) {
           const item = matches[0].item;
-          const slug = String(item.project).replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '');
           return {
-            initiative_id: ('adhoc-' + (slug || 'repo')).slice(0, 120),
+            // Ownership is known but the task is not: visibly Unassigned.
+            // SLRunner creates/reuses the real initiative from task context.
+            initiative_id: 'unassigned',
             project: item.project,
             repository: item.repository || null,
             stream: item.stream || null,
@@ -187,10 +188,10 @@ function resolveInitiativeContext(cwd, command = '') {
       classified: true,
     };
   }
-  const leaf = path.win32.basename(resolvedCwd) || 'workspace';
-  const slug = leaf.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'workspace';
   return {
-    initiative_id: ('unclassified-' + slug).slice(0, 120),
+    // No task context and no evidence: visibly Unassigned, never an
+    // invented per-command bucket.
+    initiative_id: 'unassigned',
     project: null,
     repository: null,
     stream: null,
@@ -221,12 +222,70 @@ function cleanupStaleRequests(root) {
 }
 
 
+const TASK_CONTEXT_FIELDS = new Set([
+  'context_id', 'objective', 'issue', 'goal', 'initiative_id', 'activity',
+]);
+const TASK_CONTEXT_LIMITS = {
+  context_id: 256, objective: 512, issue: 256, goal: 256,
+  initiative_id: 120, activity: 120,
+};
+const TASK_IDENTITY_KEYS = ['goal', 'issue', 'context_id'];
+
+function parseTaskContext(args) {
+  const flatId = args?.context_id;
+  const raw = args?.task_context;
+  if (flatId != null && (typeof flatId !== 'string' || !flatId.trim() || flatId.length > 256)) {
+    throw new Error('ANALIENX_RDC_CONTEXT_INVALID: context_id must be a string up to 256 characters');
+  }
+  if (raw == null && flatId == null) return null;
+  if (raw != null && (typeof raw !== 'object' || Array.isArray(raw))) {
+    throw new Error('ANALIENX_RDC_CONTEXT_INVALID: task_context must be an object');
+  }
+  const shaped = {};
+  if (raw != null) {
+    for (const key of Object.keys(raw)) {
+      if (!TASK_CONTEXT_FIELDS.has(key)) {
+        throw new Error('ANALIENX_RDC_CONTEXT_INVALID: unknown task_context field: ' + key);
+      }
+      const value = raw[key];
+      if (value == null) continue;
+      if (typeof value !== 'string' || !value.trim() || value.length > TASK_CONTEXT_LIMITS[key]) {
+        throw new Error('ANALIENX_RDC_CONTEXT_INVALID: task_context.' + key + ' is invalid');
+      }
+      shaped[key] = value.trim();
+    }
+    if (shaped.initiative_id != null && !SAFE_INITIATIVE_RE.test(shaped.initiative_id)) {
+      throw new Error('ANALIENX_RDC_CONTEXT_INVALID: task_context.initiative_id must be a stable slug');
+    }
+  }
+  if (flatId != null) {
+    const trimmed = flatId.trim();
+    if (shaped.context_id != null && shaped.context_id !== trimmed) {
+      throw new Error('ANALIENX_RDC_CONTEXT_INVALID: context_id conflicts with task_context.context_id');
+    }
+    shaped.context_id = trimmed;
+  }
+  return Object.keys(shaped).length > 0 ? shaped : null;
+}
+
+function isSyntheticInitiative(value) {
+  if (value == null) return true;
+  const lowered = String(value).toLowerCase();
+  return lowered.startsWith('unclassified-') || lowered.startsWith('adhoc-') ||
+    lowered === 'local-adhoc' || lowered === 'system' || lowered === 'unassigned';
+}
+
+function hasTaskIdentityKeys(taskContext) {
+  return taskContext != null && TASK_IDENTITY_KEYS.some((key) => taskContext[key] != null);
+}
+
 export async function routeAnalienxRunner(args, resolvedShell) {
   const original = String(args?.command ?? '');
   if (!original.trim()) {
     throw new Error('ANALIENX_RDC_RUNNER_REQUIRED: empty process command');
   }
   const capability = parseCapabilityOptions(args);
+  const taskContext = parseTaskContext(args);
   if (INTERNAL_BRIDGE_RE.test(original)) {
     throw new Error('ANALIENX_RDC_RUNNER_REQUIRED: the internal Runner bridge cannot be invoked directly');
   }
@@ -259,7 +318,7 @@ export async function routeAnalienxRunner(args, resolvedShell) {
   // A repo path may be an input, helper script, or diagnostic target. It is not
   // evidence of an execution cwd. Forward unresolved ownership to the bridge's
   // canonical TaskRouter preflight, which must succeed before any child starts.
-  const initiative = (
+  const framed = (
     capability &&
     splitCwd === workspace &&
     (capability.action === 'system' || capability.action === 'processes')
@@ -271,6 +330,18 @@ export async function routeAnalienxRunner(args, resolvedShell) {
     activity_type: 'host-observability',
     classified: true,
   } : resolveInitiativeContext(split.cwd, split.command);
+  const explicitInitiative = taskContext?.initiative_id && !isSyntheticInitiative(taskContext.initiative_id)
+    ? taskContext.initiative_id
+    : null;
+  // Explicit initiative wins. Task identity keys without an explicit ID must
+  // NOT inherit the framed binding: SLRunner resolves them against the
+  // initiative catalog, and framing the binding here would merge a fresh
+  // task into whatever the worktree happens to be bound to.
+  const initiative = explicitInitiative != null
+    ? { ...framed, initiative_id: explicitInitiative, classified: true }
+    : (hasTaskIdentityKeys(taskContext)
+      ? { ...framed, initiative_id: 'unassigned' }
+      : framed);
   const root = requestRoot();
   fs.mkdirSync(root, { recursive: true });
   cleanupStaleRequests(root);
@@ -281,7 +352,8 @@ export async function routeAnalienxRunner(args, resolvedShell) {
     ...(capability ? { capability } : { command: split.command }),
     shell: originalShell,
     initiative_id: initiative.initiative_id,
-    activity_type: initiative.activity_type,
+    ...(taskContext ? { task_context: taskContext } : {}),
+    activity_type: taskContext?.activity || initiative.activity_type,
     project: initiative.project,
     repository: initiative.repository,
     worktree: split.cwd,
