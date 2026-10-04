@@ -1,0 +1,237 @@
+{
+  "version": "work-context-conformance/v1",
+  "note": "Mirrored verbatim in analienx/remote-desktop-commander-agent-control tests/fixtures/work-context/v1/cases.json. The RDC policy (JS request framing) and the SLRunner work_context resolver (Python, final authority) must agree on initiative identity per case. Ownership inputs differ by side (policy reads repo-index files; the resolver takes a project input), so project expectations may differ where noted; initiative_id must always agree.",
+  "cases": [
+    {
+      "name": "bound-worktree-no-context",
+      "bindings": [
+        {
+          "root": "<workdir>",
+          "initiative_id": "feral-60s-trailer",
+          "project": "cinema",
+          "repository": "analienx/cinema",
+          "stream": "autonomous-production",
+          "activity_type": "keyframe-generation"
+        }
+      ],
+      "repo_index": [],
+      "command": "node tool.mjs --check",
+      "use_cd": true,
+      "task_context": null,
+      "context_id": null,
+      "resolver_project": null,
+      "expect_policy": {
+        "initiative_id": "feral-60s-trailer",
+        "project": "cinema",
+        "category": "RDC"
+      },
+      "expect_resolver": {
+        "initiative_id": "feral-60s-trailer",
+        "project": "cinema",
+        "basis": "worktree_binding"
+      }
+    },
+    {
+      "name": "repo-index-no-context",
+      "bindings": [],
+      "repo_index": [
+        {
+          "root": "<workdir>",
+          "repository": "analienx/config",
+          "project": "supervisor-control-plane",
+          "stream": null
+        }
+      ],
+      "command": "git status",
+      "use_cd": true,
+      "task_context": null,
+      "context_id": null,
+      "resolver_project": "supervisor-control-plane",
+      "expect_policy": {
+        "initiative_id": "unassigned",
+        "project": "supervisor-control-plane",
+        "category": "RDC"
+      },
+      "expect_resolver": {
+        "initiative_id": "unassigned",
+        "project": "supervisor-control-plane",
+        "basis": "unassigned"
+      }
+    },
+    {
+      "name": "unknown-no-context",
+      "bindings": [],
+      "repo_index": [],
+      "command": "git status",
+      "use_cd": false,
+      "task_context": null,
+      "context_id": null,
+      "resolver_project": null,
+      "expect_policy": {
+        "initiative_id": "unassigned",
+        "project": null,
+        "category": "RDC-UNCLASSIFIED"
+      },
+      "expect_resolver": {
+        "initiative_id": "unassigned",
+        "project": null,
+        "basis": "unassigned"
+      }
+    },
+    {
+      "name": "explicit-initiative-wins-over-binding",
+      "bindings": [
+        {
+          "root": "<workdir>",
+          "initiative_id": "older-task",
+          "project": "cinema",
+          "repository": "analienx/cinema",
+          "stream": null,
+          "activity_type": null
+        }
+      ],
+      "repo_index": [],
+      "command": "node tool.mjs --check",
+      "use_cd": true,
+      "task_context": {
+        "initiative_id": "fresh-task-42",
+        "goal": "goal-fresh-42"
+      },
+      "context_id": null,
+      "resolver_project": null,
+      "expect_policy": {
+        "initiative_id": "fresh-task-42",
+        "project": "cinema",
+        "category": "RDC"
+      },
+      "expect_resolver": {
+        "initiative_id": "fresh-task-42",
+        "project": null,
+        "basis": "task_context_create"
+      }
+    },
+    {
+      "name": "issue-key-without-id-defers-to-catalog",
+      "bindings": [],
+      "repo_index": [],
+      "command": "git status",
+      "use_cd": false,
+      "task_context": {
+        "issue": "analienx/config#36",
+        "objective": "Agent Foundry v3 substrate"
+      },
+      "context_id": null,
+      "resolver_project": null,
+      "expect_policy": {
+        "initiative_id": "unassigned",
+        "project": null,
+        "category": "RDC-UNCLASSIFIED"
+      },
+      "expect_resolver": {
+        "initiative_id": "analienx-config-36",
+        "project": null,
+        "basis": "task_context_create"
+      }
+    },
+    {
+      "name": "fresh-keys-in-bound-worktree-do-not-merge",
+      "bindings": [
+        {
+          "root": "<workdir>",
+          "initiative_id": "older-task",
+          "project": "cinema",
+          "repository": "analienx/cinema",
+          "stream": null,
+          "activity_type": null
+        }
+      ],
+      "repo_index": [],
+      "command": "node tool.mjs --check",
+      "use_cd": true,
+      "task_context": {
+        "goal": "goal-fresh-task"
+      },
+      "context_id": null,
+      "resolver_project": null,
+      "expect_policy": {
+        "initiative_id": "unassigned",
+        "project": "cinema",
+        "category": "RDC"
+      },
+      "expect_resolver": {
+        "initiative_id": "goal-fresh-task",
+        "project": null,
+        "basis": "task_context_create"
+      }
+    },
+    {
+      "name": "objective-only-keeps-binding-frame",
+      "bindings": [
+        {
+          "root": "<workdir>",
+          "initiative_id": "feral-60s-trailer",
+          "project": "cinema",
+          "repository": "analienx/cinema",
+          "stream": "autonomous-production",
+          "activity_type": "keyframe-generation"
+        }
+      ],
+      "repo_index": [],
+      "command": "node tool.mjs --check",
+      "use_cd": true,
+      "task_context": {
+        "objective": "evening keyframe pass"
+      },
+      "context_id": null,
+      "resolver_project": null,
+      "expect_policy": {
+        "initiative_id": "feral-60s-trailer",
+        "project": "cinema",
+        "category": "RDC"
+      },
+      "expect_resolver": {
+        "initiative_id": "feral-60s-trailer",
+        "project": "cinema",
+        "basis": "worktree_binding"
+      }
+    },
+    {
+      "name": "flat-context-id-forwards",
+      "bindings": [],
+      "repo_index": [],
+      "command": "git status",
+      "use_cd": false,
+      "task_context": null,
+      "context_id": "goal-flat-7",
+      "resolver_project": null,
+      "expect_policy": {
+        "initiative_id": "unassigned",
+        "project": null,
+        "category": "RDC-UNCLASSIFIED"
+      },
+      "expect_resolver": {
+        "initiative_id": "goal-flat-7",
+        "project": null,
+        "basis": "task_context_create"
+      }
+    },
+    {
+      "name": "malformed-context-fails-closed",
+      "bindings": [],
+      "repo_index": [],
+      "command": "git status",
+      "use_cd": false,
+      "task_context": {
+        "initiative_id": "not a slug!"
+      },
+      "context_id": null,
+      "resolver_project": null,
+      "expect_policy": {
+        "throws": "ANALIENX_RDC_CONTEXT_INVALID"
+      },
+      "expect_resolver": {
+        "throws": "ContextError"
+      }
+    }
+  ]
+}

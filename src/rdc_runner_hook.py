@@ -57,6 +57,18 @@ CALL_SIGNATURE = re.compile(
 SCHEMA_START = "export const StartProcessArgsSchema = z.object({"
 SCHEMA_ANCHOR = "    verbose_timing: z.boolean().optional(),"
 SCHEMA_MARKER = "    // ANALienx typed Runner capability options"
+SCHEMA_CONTEXT_MARKER = "    // ANALienx typed task-context options"
+SCHEMA_CONTEXT_BLOCK = """    // ANALienx typed task-context options
+    context_id: z.string().min(1).max(256).optional(),
+    task_context: z.object({
+        context_id: z.string().min(1).max(256).optional(),
+        objective: z.string().min(1).max(512).optional(),
+        issue: z.string().min(1).max(256).optional(),
+        goal: z.string().min(1).max(256).optional(),
+        initiative_id: z.string().min(1).max(120).optional(),
+        activity: z.string().min(1).max(120).optional(),
+    }).strict().optional(),
+"""
 SCHEMA_OPTIONS_BLOCK = """    // ANALienx typed Runner capability options
     options: z.object({
         capability: z.object({
@@ -319,7 +331,7 @@ def _patched_control_audit(original: str) -> str:
 
 
 def _patched_schema(original: str) -> str:
-    if SCHEMA_MARKER in original:
+    if SCHEMA_MARKER in original and SCHEMA_CONTEXT_MARKER in original:
         return original
     start = original.find(SCHEMA_START)
     if start < 0:
@@ -336,11 +348,19 @@ def _patched_schema(original: str) -> str:
         raise HookError(
             "Desktop Commander start_process schema changed; review upstream before installing options"
         )
-    patched_block = block.replace(
-        SCHEMA_ANCHOR,
-        SCHEMA_ANCHOR + "\n" + SCHEMA_OPTIONS_BLOCK.rstrip("\n"),
-        1,
-    )
+    patched_block = block
+    if SCHEMA_CONTEXT_MARKER not in patched_block:
+        patched_block = patched_block.replace(
+            SCHEMA_ANCHOR,
+            SCHEMA_ANCHOR + "\n" + SCHEMA_CONTEXT_BLOCK.rstrip("\n"),
+            1,
+        )
+    if SCHEMA_MARKER not in patched_block:
+        patched_block = patched_block.replace(
+            SCHEMA_ANCHOR,
+            SCHEMA_ANCHOR + "\n" + SCHEMA_OPTIONS_BLOCK.rstrip("\n"),
+            1,
+        )
     return original[:start] + patched_block + original[end:]
 
 
@@ -363,6 +383,7 @@ def status() -> dict[str, Any]:
         and FORCE_AUDIT_MARKER in target_text
     )
     options_present = SCHEMA_MARKER in schema_text
+    context_present = SCHEMA_CONTEXT_MARKER in schema_text
     policy_matches = False
     if policy_exists and source_exists:
         policy_matches = POLICY_TARGET.read_bytes() == POLICY_SOURCE.read_bytes()
@@ -375,6 +396,7 @@ def status() -> dict[str, Any]:
         and call_present
         and control_audit_present
         and options_present
+        and context_present
         and policy_matches
         and slrunner_ready
         and write_audit_status.get("healthy") is True
@@ -390,6 +412,7 @@ def status() -> dict[str, Any]:
         "schema_target": str(SCHEMA_TARGET),
         "schema_exists": schema_exists,
         "options_present": options_present,
+        "context_present": context_present,
         "policy_exists": policy_exists,
         "import_present": import_present,
         "call_present": call_present,
@@ -527,6 +550,8 @@ def ensure() -> dict[str, Any]:
         raise HookError("process-control audit verification failed after patch")
     if SCHEMA_MARKER not in schema_text_check:
         raise HookError("Runner options schema verification failed after patch")
+    if SCHEMA_CONTEXT_MARKER not in schema_text_check:
+        raise HookError("Runner task-context schema verification failed after patch")
     if POLICY_TARGET.read_bytes() != POLICY_SOURCE.read_bytes():
         raise HookError("Runner policy module verification failed after copy")
     try:

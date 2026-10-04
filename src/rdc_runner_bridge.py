@@ -23,9 +23,12 @@ REQUEST_ROOT = Path(r"C:\Workspace\.analienx\rdc-requests")
 WORKSPACE_ROOT = Path(r"C:\Workspace")
 SLRUNNER_ENTRY = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "Analienx" / "SLRunner" / "slrunner.py"
 TASK_ROUTER_ENTRY = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "Analienx" / "TaskRouter" / "task_router.py"
-INITIATIVE_REGISTRY = WORKSPACE_ROOT / ".analienx" / "runner" / "initiatives.json"
 SCHEMA = "analienx.rdc-slrunner-request/v1"
-SAFE_SEGMENT = re.compile(r"[^A-Za-z0-9._-]+")
+SAFE_INITIATIVE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$")
+TASK_CONTEXT_LIMITS = {
+    "context_id": 256, "objective": 512, "issue": 256,
+    "goal": 256, "initiative_id": 120, "activity": 120,
+}
 MAX_ARGV = 256
 MAX_ARG = 32768
 MAX_COMMAND = 131072
@@ -198,6 +201,49 @@ def _load_task_router():
     return module, registry
 
 
+def _is_synthetic(initiative_id) -> bool:
+    if not initiative_id:
+        return True
+    lowered = str(initiative_id).lower()
+    return (
+        lowered.startswith("unclassified-")
+        or lowered.startswith("adhoc-")
+        or lowered in {"local-adhoc", "system", "unassigned"}
+    )
+
+
+def _normalize_task_context(raw, flat_id):
+    if flat_id is not None and (
+        not isinstance(flat_id, str) or not flat_id.strip() or len(flat_id) > 256
+    ):
+        raise BridgeError("context_id must be a string up to 256 characters")
+    if raw is None and flat_id is None:
+        return None
+    if raw is not None and not isinstance(raw, dict):
+        raise BridgeError("task_context must be an object")
+    shaped = {}
+    for key, value in (raw or {}).items():
+        if key not in TASK_CONTEXT_LIMITS:
+            raise BridgeError(f"unknown task_context field: {key}")
+        if value is None:
+            continue
+        if (
+            not isinstance(value, str)
+            or not value.strip()
+            or len(value) > TASK_CONTEXT_LIMITS[key]
+        ):
+            raise BridgeError(f"task_context.{key} is invalid")
+        shaped[key] = value.strip()
+    if shaped.get("initiative_id") and not SAFE_INITIATIVE.fullmatch(shaped["initiative_id"]):
+        raise BridgeError("task_context.initiative_id must be a stable slug")
+    if flat_id is not None:
+        trimmed = flat_id.strip()
+        if shaped.get("context_id") is not None and shaped["context_id"] != trimmed:
+            raise BridgeError("context_id conflicts with task_context.context_id")
+        shaped["context_id"] = trimmed
+    return shaped or None
+
+
 def _task_text(request: dict) -> str:
     command = request.get("command")
     if isinstance(command, str) and command.strip():
@@ -206,39 +252,6 @@ def _task_text(request: dict) -> str:
     if isinstance(argv, list) and argv:
         return subprocess.list2cmdline([str(value) for value in argv])
     return ""
-
-
-def _initiative_for(project: str, stream: str | None, cwd: Path) -> str:
-    matches: set[str] = set()
-    try:
-        payload = json.loads(INITIATIVE_REGISTRY.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        payload = {}
-    rows = payload.get("bindings") if isinstance(payload, dict) else None
-    if isinstance(rows, list):
-        for row in rows:
-            if not isinstance(row, dict) or row.get("project") != project:
-                continue
-            if stream and row.get("stream") not in {None, stream}:
-                continue
-            root_raw = row.get("root")
-            initiative = row.get("initiative_id")
-            if not isinstance(root_raw, str) or not isinstance(initiative, str):
-                continue
-            try:
-                root = Path(root_raw)
-                if _contains(cwd, root) or _contains(root, cwd):
-                    matches.add(initiative)
-            except OSError:
-                continue
-    if len(matches) == 1:
-        return next(iter(matches))
-    slug = SAFE_SEGMENT.sub("-", project).strip("-") or "project"
-    if stream:
-        stream_slug = SAFE_SEGMENT.sub("-", stream).strip("-")
-        if stream_slug:
-            slug += "-" + stream_slug
-    return ("adhoc-" + slug)[:120]
 
 
 def _preflight_designation(request: dict) -> dict:
@@ -345,9 +358,18 @@ def _preflight_designation(request: dict) -> dict:
     designated["stream"] = (
         stream_id if isinstance(stream_id, str) and stream_id.strip() else None
     )
-    designated["initiative_id"] = _initiative_for(
-        project_id, designated["stream"], cwd
-    )
+    # The bridge designates execution ownership (project/worktree), never task
+    # identity. An explicit initiative (top-level or task context) is
+    # preserved; anything else becomes visibly Unassigned for SLRunner's
+    # shared resolver to attribute from bindings or the initiative catalog.
+    incoming = request.get("initiative_id")
+    context_explicit = (request.get("task_context") or {}).get("initiative_id")
+    if context_explicit and not _is_synthetic(context_explicit):
+        designated["initiative_id"] = context_explicit
+    elif incoming is None or _is_synthetic(incoming):
+        designated["initiative_id"] = "unassigned"
+    else:
+        designated["initiative_id"] = incoming
     designated["category"] = "RDC"
     designated["label"] = (
         f"[RDC][{project_id}]"
@@ -370,7 +392,7 @@ def _load_request(path: Path) -> dict:
     allowed = {
         "schema", "cwd", "command", "argv", "capability", "shell", "project", "stream",
         "category", "initiative_id", "activity_type", "repository", "worktree", "label",
-        "timeout_seconds", "heartbeat_seconds",
+        "timeout_seconds", "heartbeat_seconds", "context_id", "task_context",
     }
     unknown = set(payload) - allowed
     if unknown:
@@ -430,6 +452,13 @@ def _load_request(path: Path) -> dict:
     initiative_id = bounded("initiative_id", None, 120)
     if not initiative_id:
         raise BridgeError("initiative_id is required for RDC execution")
+    task_context = _normalize_task_context(
+        payload.get("task_context"), payload.get("context_id"))
+    context_initiative = (task_context or {}).get("initiative_id")
+    if (context_initiative and not _is_synthetic(initiative_id)
+            and initiative_id != context_initiative):
+        raise BridgeError(
+            "conflicting initiative: request and task_context disagree")
     activity_type = bounded("activity_type", "rdc-command", 120)
     project = bounded("project", None, 120)
     category = bounded("category", "RDC", 64)
@@ -448,6 +477,7 @@ def _load_request(path: Path) -> dict:
         "capability": dict(capability) if isinstance(capability, dict) else None,
         "shell": shell,
         "initiative_id": initiative_id,
+        "task_context": task_context,
         "activity_type": activity_type,
         "project": project,
         "stream": stream,
