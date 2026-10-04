@@ -353,7 +353,13 @@ export async function routeAnalienxRunner(args, resolvedShell) {
     shell: originalShell,
     initiative_id: initiative.initiative_id,
     ...(taskContext ? { task_context: taskContext } : {}),
-    activity_type: taskContext?.activity || initiative.activity_type,
+    // A new task never inherits the framed binding's activity label as a
+    // declaration: with task identity keys and no declared activity, leave
+    // it undeclared (null) so SLRunner inference decides. A genuine task
+    // activity declaration still wins; bound work without new task keys
+    // keeps the framed activity as its default.
+    activity_type: taskContext?.activity
+      ?? (hasTaskIdentityKeys(taskContext) ? null : initiative.activity_type),
     project: initiative.project,
     repository: initiative.repository,
     worktree: split.cwd,

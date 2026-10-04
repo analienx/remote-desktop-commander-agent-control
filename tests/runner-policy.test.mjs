@@ -516,6 +516,29 @@ test('explicit task activity wins over the binding default', async () => {
   }
 });
 
+test('new task keys without declared activity leave activity undeclared', async () => {
+  const f = fixture();
+  try {
+    const repo = path.join(f.workspace, 'worktrees', 'cinema-feral');
+    fs.mkdirSync(repo, { recursive: true });
+    fs.mkdirSync(path.dirname(f.initiatives), { recursive: true });
+    fs.writeFileSync(f.initiatives, JSON.stringify({
+      schema: 1,
+      bindings: [{ root: repo, initiative_id: 'feral-60s-trailer', project: 'cinema', activity_type: 'keyframe-generation' }],
+    }));
+    const routed = await routeAnalienxRunner({
+      command: 'cd /d "' + repo + '" && git status',
+      shell: 'cmd.exe',
+      task_context: { goal: 'goal-fresh-task' },
+    }, 'cmd.exe');
+    const request = JSON.parse(fs.readFileSync(routed.requestPath, 'utf8'));
+    assert.equal(request.initiative_id, 'unassigned');
+    assert.equal(request.activity_type, null);
+  } finally {
+    f.close();
+  }
+});
+
 test('work-context conformance fixtures agree with the shared rulebook', async () => {
   const doc = JSON.parse(fs.readFileSync(
     path.join(HERE, 'fixtures', 'work-context', 'v1', 'cases.json'), 'utf8'));
