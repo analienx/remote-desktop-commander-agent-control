@@ -48,6 +48,143 @@ function fixture() {
   };
 }
 
+
+test('explicit execution identity owns routing even when command text mentions another repo', async () => {
+  const f = fixture();
+  try {
+    const repo = path.join(f.workspace, 'worktrees', 'zigbee-coordinator');
+    fs.mkdirSync(repo, { recursive: true });
+    const routed = await routeAnalienxRunner({
+      command: 'cd /d "' + repo + '" && python C:\\\\Workspace\\\\repos\\\\config\\\\tools\\\\pi\\\\launcher.py --issue analienx/home-assistant-stack#73',
+      shell: 'cmd.exe',
+      options: {
+        execution: {
+          schema: 1,
+          identity: {
+            project_id: 'zigbee-coordinator',
+            worktree: repo,
+            repository: 'analienx/Zigbee-Coordinator',
+          },
+        },
+      },
+    }, 'cmd.exe');
+    const request = JSON.parse(fs.readFileSync(routed.requestPath, 'utf8'));
+    assert.equal(request.schema, 'analienx.rdc-slrunner-request/v2');
+    assert.equal(request.project, 'zigbee-coordinator');
+    assert.equal(request.repository, 'analienx/Zigbee-Coordinator');
+    assert.equal(path.win32.normalize(request.worktree), path.win32.normalize(repo));
+    assert.match(request.command, /home-assistant-stack#73/);
+    assert.equal(request.execution.identity.project_id, 'zigbee-coordinator');
+  } finally {
+    f.close();
+  }
+});
+
+test('explicit execution identity rejects a command cwd outside declared worktree', async () => {
+  const f = fixture();
+  try {
+    const declared = path.join(f.workspace, 'worktrees', 'zigbee-coordinator');
+    const other = path.join(f.workspace, 'worktrees', 'config');
+    fs.mkdirSync(declared, { recursive: true });
+    fs.mkdirSync(other, { recursive: true });
+    await assert.rejects(
+      routeAnalienxRunner({
+        command: 'cd /d "' + other + '" && git status',
+        shell: 'cmd.exe',
+        options: {
+          execution: {
+            schema: 1,
+            identity: { project_id: 'zigbee-coordinator', worktree: declared },
+          },
+        },
+      }, 'cmd.exe'),
+      /ANALIENX_RDC_EXECUTION_IDENTITY_MISMATCH/,
+    );
+  } finally {
+    f.close();
+  }
+});
+
+test('named operation is transported without an executable command payload', async () => {
+  const f = fixture();
+  try {
+    const repo = path.join(f.workspace, 'worktrees', 'config');
+    fs.mkdirSync(repo, { recursive: true });
+    const routed = await routeAnalienxRunner({
+      command: 'runner:operation',
+      shell: 'cmd.exe',
+      options: {
+        execution: {
+          schema: 1,
+          identity: {
+            project_id: 'supervisor-control-plane',
+            worktree: repo,
+            repository: 'analienx/config',
+          },
+          operation: {
+            name: 'mutation.validate',
+            parameters: { request_ref: 'bounded-fixture' },
+          },
+          authorization: {
+            schema: 1,
+            kind: 'user',
+            authorization_id: 'chat-20261006-rdc-contract',
+            expires_at: '2026-10-06T14:00:00+02:00',
+            max_attempts: 1,
+            artifact_sha256: 'a'.repeat(64),
+          },
+        },
+      },
+    }, 'cmd.exe');
+    const request = JSON.parse(fs.readFileSync(routed.requestPath, 'utf8'));
+    assert.equal(request.command, undefined);
+    assert.equal(request.capability, undefined);
+    assert.equal(request.execution.operation.name, 'mutation.validate');
+    assert.equal(request.execution.authorization.max_attempts, 1);
+  } finally {
+    f.close();
+  }
+});
+
+test('execution options fail closed on unknown fields and operation pseudo-command mismatch', async () => {
+  const f = fixture();
+  try {
+    const repo = path.join(f.workspace, 'worktrees', 'config');
+    fs.mkdirSync(repo, { recursive: true });
+    await assert.rejects(
+      routeAnalienxRunner({
+        command: 'runner:operation',
+        shell: 'cmd.exe',
+        options: {
+          execution: {
+            schema: 1,
+            identity: { project_id: 'supervisor-control-plane', worktree: repo, surprise: true },
+            operation: { name: 'mutation.validate' },
+          },
+        },
+      }, 'cmd.exe'),
+      /unknown execution.identity fields/,
+    );
+    await assert.rejects(
+      routeAnalienxRunner({
+        command: 'git status',
+        shell: 'cmd.exe',
+        options: {
+          execution: {
+            schema: 1,
+            identity: { project_id: 'supervisor-control-plane', worktree: repo },
+            operation: { name: 'mutation.validate' },
+          },
+        },
+      }, 'cmd.exe'),
+      /named operation requires command runner:operation/,
+    );
+  } finally {
+    f.close();
+  }
+});
+
+
 test('ordinary process command is transparently routed', async () => {
   const f = fixture();
   try {

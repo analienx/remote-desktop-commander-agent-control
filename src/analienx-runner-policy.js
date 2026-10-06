@@ -32,6 +32,9 @@ const HOST_OBSERVABILITY_RE = /(?:get-process|get-ciminstance\s+win32_process|ge
 const MAX_ROUTING_FILE_BYTES = 4 * 1024 * 1024;
 const MAX_ROUTING_ENTRIES = 5000;
 const MAX_CAPABILITY_JSON_BYTES = 256 * 1024;
+const MAX_EXECUTION_JSON_BYTES = 256 * 1024;
+const SAFE_SHA256_RE = /^[0-9a-f]{64}$/;
+const SAFE_AUTH_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const CAPABILITY_ACTIONS = new Set([
   'read_many', 'list', 'search', 'repo_status',
   'snapshot', 'delta', 'system', 'processes',
@@ -41,35 +44,138 @@ const CAPABILITY_FIELDS = new Set([
   'max_files', 'max_depth', 'snapshot_id', 'excludes', 'include_content',
 ]);
 
-function parseCapabilityOptions(args) {
-  if (args?.options == null) return null;
+function boundedString(value, name, limit, optional = false) {
+  if (value == null && optional) return null;
+  if (typeof value !== 'string' || value.length < 1 || value.length > limit) {
+    throw new Error('ANALIENX_RDC_OPTIONS_INVALID: ' + name + ' must be a non-empty string up to ' + limit + ' characters');
+  }
+  return value;
+}
+
+function parseRunnerOptions(args) {
+  if (args?.options == null) return { capability: null, execution: null };
   const options = args.options;
   if (!options || typeof options !== 'object' || Array.isArray(options)) {
     throw new Error('ANALIENX_RDC_OPTIONS_INVALID: options must be an object');
   }
   const optionKeys = Object.keys(options);
-  if (optionKeys.some((key) => key !== 'capability')) {
-    throw new Error('ANALIENX_RDC_OPTIONS_INVALID: only options.capability is supported');
+  const unknownOptions = optionKeys.filter((key) => key !== 'capability' && key !== 'execution');
+  if (unknownOptions.length > 0) {
+    throw new Error('ANALIENX_RDC_OPTIONS_INVALID: unknown options fields: ' + unknownOptions.sort().join(', '));
   }
-  const capability = options.capability;
-  if (!capability || typeof capability !== 'object' || Array.isArray(capability)) {
-    throw new Error('ANALIENX_RDC_OPTIONS_INVALID: options.capability must be an object');
+
+  let capability = null;
+  if (options.capability != null) {
+    capability = options.capability;
+    if (!capability || typeof capability !== 'object' || Array.isArray(capability)) {
+      throw new Error('ANALIENX_RDC_OPTIONS_INVALID: options.capability must be an object');
+    }
+    const unknown = Object.keys(capability).filter((key) => !CAPABILITY_FIELDS.has(key));
+    if (unknown.length > 0) {
+      throw new Error('ANALIENX_RDC_OPTIONS_INVALID: unknown capability fields: ' + unknown.sort().join(', '));
+    }
+    if (capability.schema !== 1) {
+      throw new Error('ANALIENX_RDC_OPTIONS_INVALID: capability schema must be 1');
+    }
+    if (!CAPABILITY_ACTIONS.has(capability.action)) {
+      throw new Error('ANALIENX_RDC_OPTIONS_INVALID: unsupported capability action');
+    }
+    const encoded = JSON.stringify(capability);
+    if (Buffer.byteLength(encoded, 'utf8') > MAX_CAPABILITY_JSON_BYTES) {
+      throw new Error('ANALIENX_RDC_OPTIONS_INVALID: capability request is too large');
+    }
+    capability = JSON.parse(encoded);
   }
-  const unknown = Object.keys(capability).filter((key) => !CAPABILITY_FIELDS.has(key));
-  if (unknown.length > 0) {
-    throw new Error('ANALIENX_RDC_OPTIONS_INVALID: unknown capability fields: ' + unknown.sort().join(', '));
+
+  let execution = null;
+  if (options.execution != null) {
+    execution = options.execution;
+    if (!execution || typeof execution !== 'object' || Array.isArray(execution)) {
+      throw new Error('ANALIENX_RDC_OPTIONS_INVALID: options.execution must be an object');
+    }
+    const allowedExecution = new Set(['schema', 'identity', 'operation', 'authorization']);
+    const unknown = Object.keys(execution).filter((key) => !allowedExecution.has(key));
+    if (unknown.length > 0) {
+      throw new Error('ANALIENX_RDC_OPTIONS_INVALID: unknown execution fields: ' + unknown.sort().join(', '));
+    }
+    if (execution.schema !== 1) {
+      throw new Error('ANALIENX_RDC_OPTIONS_INVALID: execution schema must be 1');
+    }
+    const identity = execution.identity;
+    if (!identity || typeof identity !== 'object' || Array.isArray(identity)) {
+      throw new Error('ANALIENX_RDC_OPTIONS_INVALID: execution.identity must be an object');
+    }
+    const allowedIdentity = new Set(['project_id', 'worktree', 'repository', 'stream_id']);
+    const unknownIdentity = Object.keys(identity).filter((key) => !allowedIdentity.has(key));
+    if (unknownIdentity.length > 0) {
+      throw new Error('ANALIENX_RDC_OPTIONS_INVALID: unknown execution.identity fields: ' + unknownIdentity.sort().join(', '));
+    }
+    boundedString(identity.project_id, 'execution.identity.project_id', 160);
+    boundedString(identity.worktree, 'execution.identity.worktree', 512);
+    if (!path.win32.isAbsolute(identity.worktree) || !insideWorkspace(identity.worktree) || !fs.existsSync(identity.worktree)) {
+      throw new Error('ANALIENX_RDC_OPTIONS_INVALID: execution.identity.worktree must be an existing absolute workspace path');
+    }
+    if (identity.repository != null) boundedString(identity.repository, 'execution.identity.repository', 160);
+    if (identity.stream_id != null) boundedString(identity.stream_id, 'execution.identity.stream_id', 160);
+
+    if (execution.operation != null) {
+      const operation = execution.operation;
+      if (!operation || typeof operation !== 'object' || Array.isArray(operation)) {
+        throw new Error('ANALIENX_RDC_OPTIONS_INVALID: execution.operation must be an object');
+      }
+      const unknownOperation = Object.keys(operation).filter((key) => key !== 'name' && key !== 'parameters');
+      if (unknownOperation.length > 0) {
+        throw new Error('ANALIENX_RDC_OPTIONS_INVALID: unknown execution.operation fields: ' + unknownOperation.sort().join(', '));
+      }
+      boundedString(operation.name, 'execution.operation.name', 120);
+      if (operation.parameters != null &&
+          (!operation.parameters || typeof operation.parameters !== 'object' || Array.isArray(operation.parameters))) {
+        throw new Error('ANALIENX_RDC_OPTIONS_INVALID: execution.operation.parameters must be an object');
+      }
+    }
+
+    if (execution.authorization != null) {
+      const auth = execution.authorization;
+      if (!auth || typeof auth !== 'object' || Array.isArray(auth)) {
+        throw new Error('ANALIENX_RDC_OPTIONS_INVALID: execution.authorization must be an object');
+      }
+      const allowedAuth = new Set([
+        'schema', 'kind', 'authorization_id', 'expires_at', 'max_attempts',
+        'target', 'artifact_sha256', 'helper_sha256',
+      ]);
+      const unknownAuth = Object.keys(auth).filter((key) => !allowedAuth.has(key));
+      if (unknownAuth.length > 0) {
+        throw new Error('ANALIENX_RDC_OPTIONS_INVALID: unknown execution.authorization fields: ' + unknownAuth.sort().join(', '));
+      }
+      if (auth.schema !== 1 || !['user', 'supervisor', 'delegation'].includes(auth.kind)) {
+        throw new Error('ANALIENX_RDC_OPTIONS_INVALID: invalid execution authorization schema/kind');
+      }
+      if (typeof auth.authorization_id !== 'string' || !SAFE_AUTH_ID_RE.test(auth.authorization_id)) {
+        throw new Error('ANALIENX_RDC_OPTIONS_INVALID: invalid execution.authorization.authorization_id');
+      }
+      boundedString(auth.expires_at, 'execution.authorization.expires_at', 64);
+      if (!Number.isInteger(auth.max_attempts) || auth.max_attempts < 1 || auth.max_attempts > 100) {
+        throw new Error('ANALIENX_RDC_OPTIONS_INVALID: execution.authorization.max_attempts must be 1..100');
+      }
+      if (auth.target != null) boundedString(auth.target, 'execution.authorization.target', 512);
+      for (const field of ['artifact_sha256', 'helper_sha256']) {
+        if (auth[field] != null && (typeof auth[field] !== 'string' || !SAFE_SHA256_RE.test(auth[field]))) {
+          throw new Error('ANALIENX_RDC_OPTIONS_INVALID: ' + field + ' must be lowercase SHA-256');
+        }
+      }
+    }
+
+    const encoded = JSON.stringify(execution);
+    if (Buffer.byteLength(encoded, 'utf8') > MAX_EXECUTION_JSON_BYTES) {
+      throw new Error('ANALIENX_RDC_OPTIONS_INVALID: execution contract is too large');
+    }
+    execution = JSON.parse(encoded);
   }
-  if (capability.schema !== 1) {
-    throw new Error('ANALIENX_RDC_OPTIONS_INVALID: capability schema must be 1');
+
+  if (capability && execution?.operation) {
+    throw new Error('ANALIENX_RDC_OPTIONS_INVALID: capability and named operation are mutually exclusive');
   }
-  if (!CAPABILITY_ACTIONS.has(capability.action)) {
-    throw new Error('ANALIENX_RDC_OPTIONS_INVALID: unsupported capability action');
-  }
-  const encoded = JSON.stringify(capability);
-  if (Buffer.byteLength(encoded, 'utf8') > MAX_CAPABILITY_JSON_BYTES) {
-    throw new Error('ANALIENX_RDC_OPTIONS_INVALID: capability request is too large');
-  }
-  return JSON.parse(encoded);
+  return { capability, execution };
 }
 
 function readBoundedRoutingJson(file) {
@@ -226,7 +332,7 @@ export async function routeAnalienxRunner(args, resolvedShell) {
   if (!original.trim()) {
     throw new Error('ANALIENX_RDC_RUNNER_REQUIRED: empty process command');
   }
-  const capability = parseCapabilityOptions(args);
+  const { capability, execution } = parseRunnerOptions(args);
   if (INTERNAL_BRIDGE_RE.test(original)) {
     throw new Error('ANALIENX_RDC_RUNNER_REQUIRED: the internal Runner bridge cannot be invoked directly');
   }
@@ -239,6 +345,24 @@ export async function routeAnalienxRunner(args, resolvedShell) {
   const split = splitCmdWorkingDirectory(original, originalShell);
   const workspace = path.win32.resolve(workspaceRoot()).toLowerCase();
   const splitCwd = path.win32.resolve(split.cwd).toLowerCase();
+  let effectiveCwd = split.cwd;
+  if (execution) {
+    const declaredWorktree = path.win32.resolve(execution.identity.worktree);
+    const declaredKey = declaredWorktree.toLowerCase();
+    if (splitCwd === workspace) {
+      effectiveCwd = declaredWorktree;
+    } else if (!(splitCwd === declaredKey || splitCwd.startsWith(declaredKey + '\\'))) {
+      throw new Error('ANALIENX_RDC_EXECUTION_IDENTITY_MISMATCH: command cwd is outside declared worktree');
+    }
+    if (execution.operation) {
+      if (String(split.command || '').trim().toLowerCase() !== 'runner:operation') {
+        throw new Error('ANALIENX_RDC_OPTIONS_INVALID: named operation requires command runner:operation');
+      }
+    } else if (String(split.command || '').trim().toLowerCase() === 'runner:operation') {
+      throw new Error('ANALIENX_RDC_OPTIONS_INVALID: runner:operation requires execution.operation');
+    }
+  }
+  const effectiveKey = path.win32.resolve(effectiveCwd).toLowerCase();
   if (capability) {
     if (String(split.command || '').trim().toLowerCase() !== 'runner:capability') {
       throw new Error(
@@ -246,7 +370,7 @@ export async function routeAnalienxRunner(args, resolvedShell) {
       );
     }
     if (
-      splitCwd === workspace &&
+      effectiveKey === workspace &&
       capability.action !== 'system' &&
       capability.action !== 'processes'
     ) {
@@ -260,8 +384,9 @@ export async function routeAnalienxRunner(args, resolvedShell) {
   // evidence of an execution cwd. Forward unresolved ownership to the bridge's
   // canonical TaskRouter preflight, which must succeed before any child starts.
   const initiative = (
+    !execution &&
     capability &&
-    splitCwd === workspace &&
+    effectiveKey === workspace &&
     (capability.action === 'system' || capability.action === 'processes')
   ) ? {
     initiative_id: 'workstation-ops',
@@ -270,22 +395,23 @@ export async function routeAnalienxRunner(args, resolvedShell) {
     stream: 'runner-redesign',
     activity_type: 'host-observability',
     classified: true,
-  } : resolveInitiativeContext(split.cwd, split.command);
+  } : resolveInitiativeContext(effectiveCwd, split.command);
   const root = requestRoot();
   fs.mkdirSync(root, { recursive: true });
   cleanupStaleRequests(root);
   const requestPath = path.win32.join(root, crypto.randomUUID() + '.json');
   const payload = {
-    schema: 'analienx.rdc-slrunner-request/v1',
-    cwd: split.cwd,
-    ...(capability ? { capability } : { command: split.command }),
+    schema: execution ? 'analienx.rdc-slrunner-request/v2' : 'analienx.rdc-slrunner-request/v1',
+    cwd: effectiveCwd,
+    ...(execution?.operation ? {} : (capability ? { capability } : { command: split.command })),
+    ...(execution ? { execution } : {}),
     shell: originalShell,
     initiative_id: initiative.initiative_id,
     activity_type: initiative.activity_type,
-    project: initiative.project,
-    repository: initiative.repository,
-    worktree: split.cwd,
-    stream: initiative.stream,
+    project: execution?.identity.project_id || initiative.project,
+    repository: execution?.identity.repository || initiative.repository,
+    worktree: execution?.identity.worktree || effectiveCwd,
+    stream: execution?.identity.stream_id || initiative.stream,
     category: initiative.classified ? 'RDC' : 'RDC-UNCLASSIFIED',
     // Desktop Commander's timeout_ms controls how long start_process waits for
     // initial output; it is not a child-process lifetime. Keep Runner lifetime

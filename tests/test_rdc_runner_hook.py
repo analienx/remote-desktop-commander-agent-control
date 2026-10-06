@@ -159,6 +159,10 @@ class HookTests(unittest.TestCase):
         self.assertIn(hook.SCHEMA_MARKER, schema_patched)
         self.assertIn("options: z.object({", schema_patched)
         self.assertIn("'read_many'", schema_patched)
+        self.assertIn("execution: z.object({", schema_patched)
+        self.assertIn("project_id: z.string()", schema_patched)
+        self.assertIn("authorization_id: z.string()", schema_patched)
+        self.assertIn("operation: z.object({", schema_patched)
         second = hook.ensure()
         self.assertFalse(second["changed"])
         self.policy_source.write_text(

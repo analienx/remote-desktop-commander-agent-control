@@ -63,6 +63,119 @@ class BridgeTests(unittest.TestCase):
         path.write_text(json.dumps(payload), encoding="utf-8")
         return path
 
+
+    def test_v2_named_operation_is_strict_and_preserved(self):
+        execution = {
+            "schema": 1,
+            "identity": {
+                "project_id": "cinema",
+                "worktree": str(self.cwd),
+                "repository": "analienx/cinema",
+                "stream_id": "feral",
+            },
+            "operation": {
+                "name": "mutation.validate",
+                "parameters": {"request_ref": "fixture"},
+            },
+            "authorization": {
+                "schema": 1,
+                "kind": "user",
+                "authorization_id": "auth-1",
+                "expires_at": "2026-10-06T14:00:00+02:00",
+                "max_attempts": 1,
+                "artifact_sha256": "a" * 64,
+            },
+        }
+        req = bridge._load_request(self.request(
+            schema=bridge.EXPLICIT_SCHEMA,
+            command=None,
+            execution=execution,
+        ))
+        self.assertIsNone(req["command"])
+        self.assertEqual(req["execution"]["operation"]["name"], "mutation.validate")
+        self.assertEqual(req["execution"]["authorization"]["max_attempts"], 1)
+
+    def test_v2_requires_execution_and_v1_rejects_execution(self):
+        with self.assertRaisesRegex(bridge.BridgeError, "v2 RDC request requires execution"):
+            bridge._load_request(self.request(schema=bridge.EXPLICIT_SCHEMA))
+        with self.assertRaisesRegex(bridge.BridgeError, "v1 RDC request cannot carry execution"):
+            bridge._load_request(self.request(
+                execution={
+                    "schema": 1,
+                    "identity": {
+                        "project_id": "cinema",
+                        "worktree": str(self.cwd),
+                    },
+                },
+            ))
+
+    def test_explicit_identity_uses_declared_owner_not_command_text(self):
+        execution = {
+            "schema": 1,
+            "identity": {
+                "project_id": "cinema",
+                "worktree": str(self.cwd),
+                "repository": "analienx/cinema",
+                "stream_id": "feral",
+            },
+        }
+        request = bridge._load_request(self.request(
+            schema=bridge.EXPLICIT_SCHEMA,
+            execution=execution,
+            command="python C:\\\\Workspace\\\\repos\\\\config\\\\helper.py --issue analienx/other#1",
+        ))
+        seen = {}
+        def route_task(task, registry, **kwargs):
+            seen["task"] = task
+            seen.update(kwargs)
+            return {
+                "routing": "single",
+                "project_id": "cinema",
+                "repository": "analienx/cinema",
+                "stream_id": "feral",
+                "worktree": {
+                    "cwd": str(self.cwd),
+                    "worktree_root": str(self.cwd),
+                },
+            }
+        router = SimpleNamespace(route_task=route_task)
+        with mock.patch.object(bridge, "_load_task_router", return_value=(router, Path("registry"))), \
+             mock.patch.object(bridge, "INITIATIVE_REGISTRY", self.workspace / "missing.json"):
+            result = self.real_preflight(request)
+        self.assertEqual(seen["task"], "explicit execution identity")
+        self.assertEqual(seen["hint_project"], "cinema")
+        self.assertEqual(seen["current_cwd"], str(self.cwd.resolve()))
+        self.assertEqual(result["project"], "cinema")
+        self.assertEqual(result["routing_basis"], "explicit_execution_contract")
+        self.assertIn("analienx/other#1", result["command"])
+
+    def test_explicit_identity_mismatch_fails_closed(self):
+        execution = {
+            "schema": 1,
+            "identity": {
+                "project_id": "cinema",
+                "worktree": str(self.cwd),
+                "repository": "analienx/cinema",
+            },
+        }
+        request = bridge._load_request(self.request(
+            schema=bridge.EXPLICIT_SCHEMA,
+            execution=execution,
+        ))
+        router = SimpleNamespace(route_task=lambda *args, **kwargs: {
+            "routing": "single",
+            "project_id": "different-project",
+            "repository": "analienx/cinema",
+            "stream_id": None,
+            "worktree": {
+                "cwd": str(self.cwd),
+                "worktree_root": str(self.cwd),
+            },
+        })
+        with mock.patch.object(bridge, "_load_task_router", return_value=(router, Path("registry"))):
+            with self.assertRaisesRegex(bridge.BridgeError, "registered project does not match"):
+                self.real_preflight(request)
+
     def test_valid_request_executes_installed_slrunner_and_preserves_exit(self):
         path = self.request()
         observed = {}

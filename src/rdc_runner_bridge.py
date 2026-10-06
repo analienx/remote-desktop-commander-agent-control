@@ -24,7 +24,11 @@ WORKSPACE_ROOT = Path(r"C:\Workspace")
 SLRUNNER_ENTRY = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "Analienx" / "SLRunner" / "slrunner.py"
 TASK_ROUTER_ENTRY = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "Analienx" / "TaskRouter" / "task_router.py"
 INITIATIVE_REGISTRY = WORKSPACE_ROOT / ".analienx" / "runner" / "initiatives.json"
-SCHEMA = "analienx.rdc-slrunner-request/v1"
+LEGACY_SCHEMA = "analienx.rdc-slrunner-request/v1"
+EXPLICIT_SCHEMA = "analienx.rdc-slrunner-request/v2"
+SCHEMAS = {LEGACY_SCHEMA, EXPLICIT_SCHEMA}
+SCHEMA = LEGACY_SCHEMA  # compatibility alias for legacy tests/callers
+MAX_EXECUTION_BYTES = 256 * 1024
 SAFE_SEGMENT = re.compile(r"[^A-Za-z0-9._-]+")
 MAX_ARGV = 256
 MAX_ARG = 32768
@@ -208,6 +212,207 @@ def _task_text(request: dict) -> str:
     return ""
 
 
+def _bounded_string(value, name: str, limit: int, *, optional: bool = False):
+    if value is None and optional:
+        return None
+    if not isinstance(value, str) or not value or len(value) > limit:
+        raise BridgeError(f"{name} must be a non-empty string up to {limit} characters")
+    return value
+
+
+def _validate_execution_contract(value: object) -> dict:
+    if not isinstance(value, dict):
+        raise BridgeError("execution must be an object")
+    allowed = {"schema", "identity", "operation", "authorization"}
+    unknown = set(value) - allowed
+    if unknown:
+        raise BridgeError(f"unknown execution fields: {sorted(unknown)}")
+    if value.get("schema") != 1:
+        raise BridgeError("execution schema must be 1")
+
+    identity = value.get("identity")
+    if not isinstance(identity, dict):
+        raise BridgeError("execution.identity must be an object")
+    allowed_identity = {"project_id", "worktree", "repository", "stream_id"}
+    unknown = set(identity) - allowed_identity
+    if unknown:
+        raise BridgeError(f"unknown execution.identity fields: {sorted(unknown)}")
+    project_id = _bounded_string(identity.get("project_id"), "execution.identity.project_id", 160)
+    worktree_raw = _bounded_string(identity.get("worktree"), "execution.identity.worktree", 512)
+    worktree = Path(worktree_raw)
+    if not worktree.is_absolute() or not worktree.is_dir() or not _contains(worktree, WORKSPACE_ROOT):
+        raise BridgeError("execution.identity.worktree must be an existing absolute workspace directory")
+    repository = _bounded_string(
+        identity.get("repository"), "execution.identity.repository", 160, optional=True
+    )
+    stream_id = _bounded_string(
+        identity.get("stream_id"), "execution.identity.stream_id", 160, optional=True
+    )
+
+    operation_out = None
+    operation = value.get("operation")
+    if operation is not None:
+        if not isinstance(operation, dict):
+            raise BridgeError("execution.operation must be an object")
+        unknown = set(operation) - {"name", "parameters"}
+        if unknown:
+            raise BridgeError(f"unknown execution.operation fields: {sorted(unknown)}")
+        name = _bounded_string(operation.get("name"), "execution.operation.name", 120)
+        parameters = operation.get("parameters", {})
+        if not isinstance(parameters, dict):
+            raise BridgeError("execution.operation.parameters must be an object")
+        operation_out = {"name": name, "parameters": parameters}
+
+    authorization_out = None
+    authorization = value.get("authorization")
+    if authorization is not None:
+        if not isinstance(authorization, dict):
+            raise BridgeError("execution.authorization must be an object")
+        allowed_auth = {
+            "schema", "kind", "authorization_id", "expires_at", "max_attempts",
+            "target", "artifact_sha256", "helper_sha256",
+        }
+        unknown = set(authorization) - allowed_auth
+        if unknown:
+            raise BridgeError(f"unknown execution.authorization fields: {sorted(unknown)}")
+        if authorization.get("schema") != 1:
+            raise BridgeError("execution.authorization schema must be 1")
+        if authorization.get("kind") not in {"user", "supervisor", "delegation"}:
+            raise BridgeError("execution.authorization.kind is invalid")
+        auth_id = _bounded_string(
+            authorization.get("authorization_id"),
+            "execution.authorization.authorization_id", 128,
+        )
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", auth_id):
+            raise BridgeError("execution.authorization.authorization_id has invalid characters")
+        expires_at = _bounded_string(
+            authorization.get("expires_at"), "execution.authorization.expires_at", 64
+        )
+        attempts = authorization.get("max_attempts")
+        if not isinstance(attempts, int) or isinstance(attempts, bool) or not 1 <= attempts <= 100:
+            raise BridgeError("execution.authorization.max_attempts must be 1..100")
+        authorization_out = {
+            "schema": 1,
+            "kind": authorization["kind"],
+            "authorization_id": auth_id,
+            "expires_at": expires_at,
+            "max_attempts": attempts,
+        }
+        for field, limit in (("target", 512),):
+            if authorization.get(field) is not None:
+                authorization_out[field] = _bounded_string(
+                    authorization[field], f"execution.authorization.{field}", limit
+                )
+        for field in ("artifact_sha256", "helper_sha256"):
+            digest = authorization.get(field)
+            if digest is not None:
+                if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+                    raise BridgeError(f"execution.authorization.{field} must be lowercase SHA-256")
+                authorization_out[field] = digest
+
+    encoded = json.dumps(value, ensure_ascii=False).encode("utf-8")
+    if len(encoded) > MAX_EXECUTION_BYTES:
+        raise BridgeError("execution contract exceeds size limit")
+    out = {
+        "schema": 1,
+        "identity": {
+            "project_id": project_id,
+            "worktree": str(worktree.resolve(strict=True)),
+        },
+    }
+    if repository is not None:
+        out["identity"]["repository"] = repository
+    if stream_id is not None:
+        out["identity"]["stream_id"] = stream_id
+    if operation_out is not None:
+        out["operation"] = operation_out
+    if authorization_out is not None:
+        out["authorization"] = authorization_out
+    return out
+
+
+def _explicit_designation(request: dict) -> dict:
+    execution = request.get("execution")
+    if execution is None:
+        return request
+    identity = execution["identity"]
+    module, registry = _load_task_router()
+    try:
+        result = module.route_task(
+            "explicit execution identity",
+            registry,
+            hint_project=identity["project_id"],
+            hint_stream=identity.get("stream_id"),
+            current_cwd=identity["worktree"],
+        )
+    except Exception as exc:
+        raise BridgeError(f"explicit execution identity validation failed: {exc}") from exc
+    if not isinstance(result, dict):
+        raise BridgeError("TaskRouter returned an invalid explicit identity designation")
+    clarification = result.get("clarification")
+    if result.get("routing") != "single" or (
+        isinstance(clarification, dict) and clarification.get("required") is True
+    ):
+        raise BridgeError(
+            "ANALIENX_RDC_EXECUTION_IDENTITY_REJECTED "
+            + json.dumps(
+                {
+                    "routing": result.get("routing"),
+                    "clarification": clarification,
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+        )
+    if result.get("project_id") != identity["project_id"]:
+        raise BridgeError(
+            "ANALIENX_RDC_EXECUTION_IDENTITY_REJECTED: registered project does not match explicit project_id"
+        )
+    if identity.get("repository") is not None and result.get("repository") != identity["repository"]:
+        raise BridgeError(
+            "ANALIENX_RDC_EXECUTION_IDENTITY_REJECTED: registered repository does not match explicit repository"
+        )
+    if identity.get("stream_id") is not None and result.get("stream_id") != identity["stream_id"]:
+        raise BridgeError(
+            "ANALIENX_RDC_EXECUTION_IDENTITY_REJECTED: registered stream does not match explicit stream_id"
+        )
+    location = result.get("worktree")
+    if not isinstance(location, dict):
+        raise BridgeError("ANALIENX_RDC_EXECUTION_IDENTITY_REJECTED: TaskRouter omitted worktree")
+    resolved_root = location.get("worktree_root")
+    resolved_cwd = location.get("cwd")
+    if not isinstance(resolved_root, str) or not isinstance(resolved_cwd, str):
+        raise BridgeError("ANALIENX_RDC_EXECUTION_IDENTITY_REJECTED: TaskRouter worktree is incomplete")
+    expected = Path(identity["worktree"]).resolve(strict=True)
+    actual = Path(resolved_root).resolve(strict=True)
+    if expected != actual:
+        raise BridgeError(
+            "ANALIENX_RDC_EXECUTION_IDENTITY_REJECTED: registered worktree does not match explicit worktree"
+        )
+    cwd = Path(request["cwd"]).resolve(strict=True)
+    if not _contains(cwd, expected):
+        raise BridgeError(
+            "ANALIENX_RDC_EXECUTION_IDENTITY_REJECTED: execution cwd is outside explicit worktree"
+        )
+
+    designated = dict(request)
+    designated["cwd"] = str(cwd)
+    designated["worktree"] = str(expected)
+    designated["project"] = identity["project_id"]
+    designated["repository"] = identity.get("repository") or result.get("repository")
+    designated["stream"] = identity.get("stream_id") or result.get("stream_id")
+    designated["initiative_id"] = _initiative_for(
+        designated["project"], designated["stream"], cwd
+    )
+    designated["category"] = "RDC"
+    designated["label"] = (
+        f"[RDC][{designated['project']}]"
+        + (f"[{designated['stream']}]" if designated["stream"] else "")
+    )[:200]
+    designated["routing_basis"] = "explicit_execution_contract"
+    return designated
+
+
 def _initiative_for(project: str, stream: str | None, cwd: Path) -> str:
     matches: set[str] = set()
     try:
@@ -242,6 +447,8 @@ def _initiative_for(project: str, stream: str | None, cwd: Path) -> str:
 
 
 def _preflight_designation(request: dict) -> dict:
+    if request.get("execution") is not None:
+        return _explicit_designation(request)
     if request.get("capability") is not None:
         return request
     task = _task_text(request)
@@ -368,15 +575,20 @@ def _load_request(path: Path) -> dict:
     if not isinstance(payload, dict):
         raise BridgeError("request JSON must be an object")
     allowed = {
-        "schema", "cwd", "command", "argv", "capability", "shell", "project", "stream",
+        "schema", "cwd", "command", "argv", "capability", "execution", "shell", "project", "stream",
         "category", "initiative_id", "activity_type", "repository", "worktree", "label",
         "timeout_seconds", "heartbeat_seconds",
     }
     unknown = set(payload) - allowed
     if unknown:
         raise BridgeError(f"unknown request fields: {sorted(unknown)}")
-    if payload.get("schema") != SCHEMA:
+    request_schema = payload.get("schema")
+    if request_schema not in SCHEMAS:
         raise BridgeError("unsupported RDC SLRunner request schema")
+    if request_schema == EXPLICIT_SCHEMA and payload.get("execution") is None:
+        raise BridgeError("v2 RDC request requires execution")
+    if request_schema == LEGACY_SCHEMA and payload.get("execution") is not None:
+        raise BridgeError("v1 RDC request cannot carry execution")
 
     cwd_raw = payload.get("cwd")
     if not isinstance(cwd_raw, str) or not cwd_raw:
@@ -388,9 +600,14 @@ def _load_request(path: Path) -> dict:
     command = payload.get("command")
     argv = payload.get("argv")
     capability = payload.get("capability")
-    modes = int(bool(command)) + int(bool(argv)) + int(capability is not None)
+    execution = (
+        _validate_execution_contract(payload.get("execution"))
+        if payload.get("execution") is not None else None
+    )
+    operation = execution.get("operation") if execution is not None else None
+    modes = int(bool(command)) + int(bool(argv)) + int(capability is not None) + int(operation is not None)
     if modes != 1:
-        raise BridgeError("provide exactly one of command, argv or capability")
+        raise BridgeError("provide exactly one of command, argv, capability or named operation")
     if command is not None and (
         not isinstance(command, str) or not command.strip() or len(command) > MAX_COMMAND
     ):
@@ -446,6 +663,7 @@ def _load_request(path: Path) -> dict:
         "command": command,
         "argv": argv,
         "capability": dict(capability) if isinstance(capability, dict) else None,
+        "execution": execution,
         "shell": shell,
         "initiative_id": initiative_id,
         "activity_type": activity_type,

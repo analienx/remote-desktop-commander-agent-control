@@ -75,7 +75,30 @@ SCHEMA_OPTIONS_BLOCK = """    // ANALienx typed Runner capability options
             snapshot_id: z.string().optional(),
             excludes: z.array(z.string()).optional(),
             include_content: z.boolean().optional(),
-        }).strict(),
+        }).strict().optional(),
+        execution: z.object({
+            schema: z.literal(1),
+            identity: z.object({
+                project_id: z.string().min(1).max(160),
+                worktree: z.string().min(1).max(512),
+                repository: z.string().min(1).max(160).optional(),
+                stream_id: z.string().min(1).max(160).optional(),
+            }).strict(),
+            operation: z.object({
+                name: z.string().min(1).max(120),
+                parameters: z.record(z.unknown()).optional(),
+            }).strict().optional(),
+            authorization: z.object({
+                schema: z.literal(1),
+                kind: z.enum(['user', 'supervisor', 'delegation']),
+                authorization_id: z.string().min(1).max(128),
+                expires_at: z.string().min(1).max(64),
+                max_attempts: z.number().int().min(1).max(100),
+                target: z.string().max(512).optional(),
+                artifact_sha256: z.string().regex(/^[0-9a-f]{64}$/).optional(),
+                helper_sha256: z.string().regex(/^[0-9a-f]{64}$/).optional(),
+            }).strict().optional(),
+        }).strict().optional(),
     }).strict().optional(),
 """
 CALL_BLOCK = """    try {
