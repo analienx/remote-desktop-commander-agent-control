@@ -199,6 +199,30 @@ execution authority. When TaskRouter requires clarification, the bridge returns
 `ROUTING_CLARIFICATION_REQUIRED` with the question, candidates and answer contract.
 Resolve the missing ownership fact and rerun routing through the normal Runner path.
 
+### Explicit identity through the published RDC process interface
+
+Desktop Commander's installed hook already accepts a typed `options.execution`
+contract, but the publicly exposed `start_process` schema may omit `options`.
+When the process command references multiple repositories, callers can supply a
+strict routing prefix through the available `command` field instead:
+
+```text
+runner:exec --project-id home-assistant --stream-id zigbee-coordinator-migration --repository analienx/home-assistant-stack --worktree "C:\Workspace\worktrees\ha-p10-original-network-recovery" -- git status -sb
+```
+
+The prefix is **not** a shell command. The RDC hook removes it, validates fields
+and the workspace path, then emits the existing `analienx.rdc-slrunner-request/v2`
+execution identity. The Python bridge independently checks project, optional
+stream/repository, and the exact worktree against TaskRouter before launching a
+child. The effective cwd is the declared worktree. A malformed prefix, duplicated
+typed identity, invalid project/stream, or mismatched worktree fails closed.
+
+This transports *routing identity only*. It does not provide mutation
+authorization, approve hardware actions, bypass independent safety gates, or
+silently infer the owner from helper paths. The `--` delimiter is mandatory.
+Prefer a fully specified stream for multi-stream repositories. Use `shell:
+"cmd.exe"` when commands depend on cmd-specific syntax.
+
 There is no loopback Runner service, bearer token, second scheduler, mutation broker,
 or approval engine in this path. SLRunner owns only process lifetime, catastrophic
 accident guard, heartbeat, logs and structured events. Project-specific safety stays

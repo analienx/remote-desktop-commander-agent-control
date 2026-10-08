@@ -35,6 +35,37 @@ const MAX_CAPABILITY_JSON_BYTES = 256 * 1024;
 const MAX_EXECUTION_JSON_BYTES = 256 * 1024;
 const SAFE_SHA256_RE = /^[0-9a-f]{64}$/;
 const SAFE_AUTH_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+// The published RDC start_process interface exposes command/shell but not its
+// installed `options` extension. This strict *routing-only* prefix carries an
+// explicit owner through that public interface into the existing v2 contract.
+// It is removed before shell execution and cannot grant authorization.
+const INLINE_EXEC_PREFIX = /^\s*runner:exec\b/i;
+const INLINE_EXEC_RE = /^runner:exec[ \t]+--project-id[ \t]+([A-Za-z0-9][A-Za-z0-9._-]{0,159})(?:[ \t]+--stream-id[ \t]+([A-Za-z0-9][A-Za-z0-9._-]{0,159}))?(?:[ \t]+--repository[ \t]+([A-Za-z0-9._-]+\/[A-Za-z0-9._-]+))?[ \t]+--worktree[ \t]+"([^"\r\n]+)"[ \t]+--[ \t]+([^\r\n][\s\S]*)$/;
+
+function inlineExecutionDirective(original) {
+  if (!INLINE_EXEC_PREFIX.test(original)) return null;
+  const match = INLINE_EXEC_RE.exec(original);
+  if (!match || !match[5].trim() || INLINE_EXEC_PREFIX.test(match[5])) {
+    throw new Error(
+      'ANALIENX_RDC_EXECUTION_IDENTITY_INVALID: expected ' +
+      'runner:exec --project-id ID [--stream-id ID] [--repository owner/repo] ' +
+      '--worktree "C:\\Workspace\\worktrees\\name" -- COMMAND'
+    );
+  }
+  const [, project_id, stream_id, repository, worktree, command] = match;
+  // No shell expansions, control tokens, or line breaks in the identity path.
+  if (/[%!^&|<>;\r\n]/.test(worktree)) {
+    throw new Error('ANALIENX_RDC_EXECUTION_IDENTITY_INVALID: unsafe worktree path');
+  }
+  const identity = { project_id, worktree };
+  if (stream_id) identity.stream_id = stream_id;
+  if (repository) identity.repository = repository;
+  return {
+    command,
+    execution: parseRunnerOptions({ options: { execution: { schema: 1, identity } } }).execution,
+  };
+}
+
 const CAPABILITY_ACTIONS = new Set([
   'read_many', 'list', 'search', 'repo_status',
   'snapshot', 'delta', 'system', 'processes',
@@ -332,8 +363,15 @@ export async function routeAnalienxRunner(args, resolvedShell) {
   if (!original.trim()) {
     throw new Error('ANALIENX_RDC_RUNNER_REQUIRED: empty process command');
   }
-  const { capability, execution } = parseRunnerOptions(args);
-  if (INTERNAL_BRIDGE_RE.test(original)) {
+  const parsed = parseRunnerOptions(args);
+  const directive = inlineExecutionDirective(original);
+  if (directive && (parsed.execution || parsed.capability)) {
+    throw new Error('ANALIENX_RDC_EXECUTION_IDENTITY_INVALID: inline identity cannot be combined with typed options');
+  }
+  const { capability } = parsed;
+  const execution = directive?.execution || parsed.execution;
+  const command = directive?.command || original;
+  if (INTERNAL_BRIDGE_RE.test(command)) {
     throw new Error('ANALIENX_RDC_RUNNER_REQUIRED: the internal Runner bridge cannot be invoked directly');
   }
 
@@ -342,7 +380,7 @@ export async function routeAnalienxRunner(args, resolvedShell) {
     throw new Error('ANALIENX_RDC_RUNNER_REQUIRED: RDC Runner bridge is not installed');
   }
   const originalShell = String(resolvedShell || args?.shell || process.env.COMSPEC || 'cmd.exe');
-  const split = splitCmdWorkingDirectory(original, originalShell);
+  const split = splitCmdWorkingDirectory(command, originalShell);
   const workspace = path.win32.resolve(workspaceRoot()).toLowerCase();
   const splitCwd = path.win32.resolve(split.cwd).toLowerCase();
   let effectiveCwd = split.cwd;
