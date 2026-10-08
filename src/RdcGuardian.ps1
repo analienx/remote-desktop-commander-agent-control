@@ -178,6 +178,23 @@ $agent = $agents[-1]
 $conns = Get-NetTCPConnection -OwningProcess $agent.Id -State Established -ErrorAction SilentlyContinue
 $uptimeMin = ((Get-Date) - $agent.StartTime).TotalMinutes
 
+# Authentication waiting is actionable, not a process-health failure. Detect it
+# before connection recovery so a transient socket loss cannot rotate the code.
+$ready = $false; $pairingNeeded = $false
+if (Test-Path -LiteralPath $outLog) {
+    $ready = Select-String -LiteralPath $outLog -Pattern 'Device ready' -Quiet
+    $pairingNeeded = Select-String -LiteralPath $outLog -Pattern 'Verify your device|Verify Device|pairing code|Starting device authorization flow|Waiting for authorization|Please complete authentication|Persisted session invalid|Invalid Refresh Token' -Quiet
+}
+if ($pairingNeeded -and -not $ready) {
+    $notifyNeeded = $state.LastStatus -ne 'NEEDS-USER-VERIFICATION'
+    Save-State 'NEEDS-USER-VERIFICATION'
+    Write-Log 'NEEDS USER ACTION: authorize the device; preserving current agent and code'
+    if ($notifyNeeded) {
+        Invoke-RdcHidden -File 'powershell.exe' -Arguments @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"' + $notify + '"'), '-Title', '"RDC Agent"', '-Message', '"Device verification needed - open Agent Status; restart alone cannot authenticate"') | Out-Null
+    }
+    exit 4
+}
+
 if (-not $conns) {
     if ($uptimeMin -lt ($bootGraceSec / 60)) {
         Write-Log ("agent PID " + $agent.Id + " booting - grace")
@@ -191,11 +208,6 @@ if (-not $conns) {
 }
 
 # ---------- 4. session readiness ----------
-$ready = $false; $pairingNeeded = $false
-if (Test-Path -LiteralPath $outLog) {
-    $ready = Select-String -LiteralPath $outLog -Pattern 'Device ready' -Quiet
-    $pairingNeeded = Select-String -LiteralPath $outLog -Pattern 'Verify your device|Verify Device|pairing code' -Quiet
-}
 if ($ready) {
     if ($state.ConsecutiveFailures -gt 0) { Write-Log 'agent recovered - resetting failure counter' }
     $state.ConsecutiveFailures = 0
@@ -206,18 +218,6 @@ if ($ready) {
 if ($uptimeMin -lt ($bootGraceSec / 60)) {
     Write-Log "agent connected, still booting - grace"
     Save-State 'BOOTING'; exit 0
-}
-if ($pairingNeeded) {
-    if ($state.ConsecutiveFailures -eq 0 -and (Try-Restart 'agent stuck at pairing prompt')) {
-        $state.ConsecutiveFailures++
-        Save-State 'NEEDS-USER-VERIFICATION-RESTARTED'
-        Write-Log 'NEEDS USER ACTION: pairing prompt - user must verify code in browser/console'
-        Invoke-RdcHidden -File 'powershell.exe' -Arguments @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"' + $notify + '"'), '-Title', '"RDC Agent"', '-Message', '"Device verification needed - click the toast or open Agent Status"') | Out-Null
-        exit 4
-    }
-    Save-State 'NEEDS-USER-VERIFICATION'
-    Write-Log 'NEEDS USER ACTION: pairing still unverified (restart did not help) - no thrash'
-    exit 4
 }
 $state.ConsecutiveFailures++
 if ($state.ConsecutiveFailures -ge 3) {
