@@ -23,7 +23,7 @@ jobs:
           python -m py_compile src/rdc_write_audit_hook.py
           node --check src/analienx-write-audit.js
       - name: Runner routing unit tests
-        run: python -m unittest tests.test_rdc_runner_bridge tests.test_rdc_runner_hook -v
+        run: python -m unittest tests.test_rdc_runner_bridge tests.test_rdc_runner_hook tests.test_guardian_auth_wait -v
       - name: Runner policy JavaScript tests
         run: node --test tests/runner-policy.test.mjs
       - name: Guardian PowerShell parse
