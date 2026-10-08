@@ -177,6 +177,30 @@ class HookTests(unittest.TestCase):
         self.assertEqual(self.target.read_text(encoding="utf-8"), self.original)
         self.assertEqual(self.schema_target.read_text(encoding="utf-8"), self.schema_original)
 
+    def test_live_locked_policy_update_preserves_backup_and_is_idempotent(self):
+        hook.ensure()
+        previous = self.policy_target.read_bytes()
+        replacement = b"export function routeAnalienxRunner() { return 'new'; }\n"
+        self.policy_source.write_bytes(replacement)
+        original_replace = hook.os.replace
+
+        def locked_policy_only(source, destination):
+            if Path(destination) == self.policy_target:
+                raise PermissionError("simulated Windows module lock")
+            return original_replace(source, destination)
+
+        with mock.patch.object(hook.os, "replace", side_effect=locked_policy_only):
+            updated = hook.ensure()
+            self.assertTrue(updated["healthy"])
+            self.assertTrue(updated["changed"])
+            self.assertEqual(self.policy_target.read_bytes(), replacement)
+            self.assertFalse(hook.ensure()["changed"])
+
+        backup = self.backups / (
+            f"analienx-runner-policy.{hook._sha_bytes(previous)}.js"
+        )
+        self.assertEqual(backup.read_bytes(), previous)
+
     def test_upgrade_preserves_original_restore_backup(self):
         original_backup = self.backups / "original.js"
         schema_backup = self.backups / "schema-original.js"

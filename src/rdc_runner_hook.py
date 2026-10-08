@@ -170,7 +170,7 @@ def _write_atomic(path: Path, data: bytes, *, allow_locked_target_fallback: bool
         except PermissionError:
             if (
                 not allow_locked_target_fallback
-                or path not in {TARGET, SCHEMA_TARGET}
+                or path not in {TARGET, SCHEMA_TARGET, POLICY_TARGET}
                 or not path.is_file()
             ):
                 raise
@@ -532,7 +532,23 @@ def ensure() -> dict[str, Any]:
             allow_locked_target_fallback=True,
         )
 
-    _write_atomic(POLICY_TARGET, policy_bytes)
+    if policy_changed:
+        # Keep a verified content-addressed copy before an in-place Windows
+        # fallback: the live Node module may forbid rename/replace but allow
+        # an ordinary write. This backup also survives agent restarts.
+        if POLICY_TARGET.is_file():
+            previous_policy = POLICY_TARGET.read_bytes()
+            policy_backup = BACKUP_ROOT / (
+                f"analienx-runner-policy.{_sha_bytes(previous_policy)}.js"
+            )
+            if policy_backup.is_file():
+                if policy_backup.read_bytes() != previous_policy:
+                    raise HookError("policy backup digest/name collision or corruption")
+            else:
+                _write_atomic(policy_backup, previous_policy)
+        _write_atomic(
+            POLICY_TARGET, policy_bytes, allow_locked_target_fallback=True
+        )
 
     patched_bytes = TARGET.read_bytes()
     patched_sha = _sha_bytes(patched_bytes)
