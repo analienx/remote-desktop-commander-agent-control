@@ -210,6 +210,20 @@ strict routing prefix through the available `command` field instead:
 runner:exec --project-id home-assistant --stream-id zigbee-coordinator-migration --repository analienx/home-assistant-stack --worktree "C:\Workspace\worktrees\ha-p10-original-network-recovery" -- git status -sb
 ```
 
+For commands that only need a registered execution directory, use
+`runner:cwd "C:\Workspace\worktrees\ha-p10-original-network-recovery" -- git status -sb`.
+The canonical TaskRouter derives ownership from that directory. Leading CMD
+`cd /d "..." &&` and PowerShell `Set-Location -LiteralPath "...";` or `cd '...' &&`
+also supply the execution directory. Helper paths and issue references remain
+arguments, rather than competing owners. Each request is independent; no owner
+is remembered globally between remote sessions. A missing registration or an
+actually ambiguous stream still requires the explicit `runner:exec` contract.
+
+Deploy the bridge and the policy **source** beside the hook as well as the npm
+policy module together. Updating only the loaded npm module leaves an older
+bridge and lets the next hook reinstall restore an obsolete policy. Verify the
+hook reports `policy_matches: true` after deployment.
+
 The prefix is **not** a shell command. The RDC hook removes it, validates fields
 and the workspace path, then emits the existing `analienx.rdc-slrunner-request/v2`
 execution identity. The Python bridge independently checks project, optional

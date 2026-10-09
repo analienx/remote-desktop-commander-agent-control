@@ -223,18 +223,30 @@ function insideWorkspace(candidate) {
 
 export function splitCmdWorkingDirectory(command, shell) {
   const base = path.win32.basename(shell || '').toLowerCase();
-  if (base !== 'cmd.exe' && base !== 'cmd') {
+  const context = command.match(/^runner:cwd[ \t]+"([^"\r\n]+)"[ \t]+--[ \t]+([^\r\n][\s\S]*)$/);
+  if (/^\s*runner:cwd\b/i.test(command) && !context) {
+    throw new Error('ANALIENX_RDC_CONTEXT_INVALID: expected runner:cwd "C:\\Workspace\\worktrees\\name" -- COMMAND');
+  }
+  const powershell = ['powershell', 'powershell.exe', 'pwsh', 'pwsh.exe'].includes(base);
+  if (!context && !powershell && base !== 'cmd.exe' && base !== 'cmd') {
     return { cwd: workspaceRoot(), command };
   }
-  const match = command.match(/^[^\S\r\n]*cd[^\S\r\n]+\/d[^\S\r\n]+(?:"([^"\r\n]+)"|([^&\r\n]+?))[^\S\r\n]*&&[^\S\r\n]*([\s\S]+)$/i);
+  const match = context || (powershell
+    ? command.match(/^[ \t]*(?:Set-Location[ \t]+-LiteralPath|cd)[ \t]+(?:"([^"\r\n]+)"|'([^'\r\n]+)')[ \t]*(?:&&|;)[ \t]*([^\r\n][\s\S]*)$/i)
+    : command.match(/^[^\S\r\n]*cd[^\S\r\n]+\/d[^\S\r\n]+(?:"([^"\r\n]+)"|([^&\r\n]+?))[^\S\r\n]*&&[^\S\r\n]*([\s\S]+)$/i));
   if (!match) {
     return { cwd: workspaceRoot(), command };
   }
   const cwd = String(match[1] || match[2] || '').trim();
-  if (!path.win32.isAbsolute(cwd) || /[%!^\r\n]/.test(cwd) || !insideWorkspace(cwd)) {
+  if (!path.win32.isAbsolute(cwd) || /[%!^$`*?\r\n]/.test(cwd) || !insideWorkspace(cwd) || !fs.existsSync(cwd) || !fs.statSync(cwd).isDirectory()) {
+    if (context) throw new Error('ANALIENX_RDC_CONTEXT_INVALID: worktree must be an existing absolute workspace directory without expansions');
     return { cwd: workspaceRoot(), command };
   }
-  return { cwd: path.win32.resolve(cwd), command: match[3] };
+  const remainder = context ? match[2] : match[3];
+  if (/^\s*runner:(?:cwd|exec)\b/i.test(remainder)) {
+    throw new Error('ANALIENX_RDC_CONTEXT_INVALID: nested routing directives are forbidden');
+  }
+  return { cwd: path.win32.resolve(cwd), command: remainder };
 }
 
 function resolveInitiativeContext(cwd, command = '') {
@@ -381,6 +393,9 @@ export async function routeAnalienxRunner(args, resolvedShell) {
   }
   const originalShell = String(resolvedShell || args?.shell || process.env.COMSPEC || 'cmd.exe');
   const split = splitCmdWorkingDirectory(command, originalShell);
+  if (INTERNAL_BRIDGE_RE.test(split.command)) {
+    throw new Error('ANALIENX_RDC_RUNNER_REQUIRED: the internal Runner bridge cannot be invoked directly');
+  }
   const workspace = path.win32.resolve(workspaceRoot()).toLowerCase();
   const splitCwd = path.win32.resolve(split.cwd).toLowerCase();
   let effectiveCwd = split.cwd;

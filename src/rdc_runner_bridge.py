@@ -460,6 +460,12 @@ def _preflight_designation(request: dict) -> dict:
     stream = request.get("stream")
     hint_project = project if isinstance(project, str) and project.strip() else None
     hint_stream = stream if isinstance(stream, str) and stream.strip() else None
+    # A concrete execution directory is stronger than cached JS attribution.
+    # Let the canonical router resolve that directory before considering task
+    # text; infrastructure providers and ledger references are not owners.
+    bound_cwd = Path(request["cwd"]).resolve(strict=True) != WORKSPACE_ROOT.resolve(strict=True)
+    if bound_cwd:
+        hint_project = None
     try:
         result = module.route_task(
             task,
@@ -541,6 +547,11 @@ def _preflight_designation(request: dict) -> dict:
         or not _contains(worktree, WORKSPACE_ROOT)
     ):
         raise BridgeError("TaskRouter worktree selection escaped the workspace")
+    if bound_cwd and cwd.resolve(strict=True) != Path(request["cwd"]).resolve(strict=True):
+        raise BridgeError(
+            "ANALIENX_RDC_CONTEXT_REJECTED: declared cwd is not owned by the resolved project; "
+            "use runner:exec with the registered project and worktree"
+        )
 
     designated = dict(request)
     designated["cwd"] = str(cwd.resolve(strict=True))

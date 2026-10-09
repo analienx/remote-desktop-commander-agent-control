@@ -330,6 +330,38 @@ class BridgeTests(unittest.TestCase):
             with self.assertRaisesRegex(bridge.BridgeError, "one explicit project/worktree"):
                 self.real_preflight(request)
 
+    def test_bound_cwd_ignores_cached_project_hint_and_keeps_helper_arguments(self):
+        request = bridge._load_request(self.request(
+            project="obsolete-owner", command="python config/helper.py --issue other/repo#73",
+        ))
+        seen = {}
+        def route(task, registry, **kwargs):
+            seen.update(kwargs)
+            return {"routing": "single", "project_id": "cinema", "stream_id": "feral",
+                    "repository": "analienx/cinema",
+                    "worktree": {"cwd": str(self.cwd), "worktree_root": str(self.cwd)}}
+        router = SimpleNamespace(route_task=route)
+        with mock.patch.object(bridge, "_load_task_router", return_value=(router, Path("registry"))):
+            result = self.real_preflight(request)
+        self.assertIsNone(seen["hint_project"])
+        self.assertEqual(seen["current_cwd"], str(self.cwd.resolve()))
+        self.assertEqual(result["project"], "cinema")
+        self.assertEqual(result["command"], request["command"])
+
+    def test_bound_directory_cannot_be_reassigned_to_another_checkout(self):
+        other = self.workspace / "other"
+        other.mkdir()
+        router = SimpleNamespace(route_task=lambda *a, **k: {
+            "routing": "single", "project_id": "cinema",
+            "worktree": {"cwd": str(other), "worktree_root": str(other)},
+        })
+        self.preflight_mock.side_effect = self.real_preflight
+        with mock.patch.object(bridge, "_load_task_router", return_value=(router, Path("registry"))), \
+             mock.patch.object(bridge.subprocess, "Popen") as popen:
+            with self.assertRaisesRegex(bridge.BridgeError, "declared cwd is not owned"):
+                bridge.execute(self.request())
+        popen.assert_not_called()
+
     def test_required_clarification_survives_bridge_and_never_spawns_runner(self):
         path = self.request(
             cwd=str(self.workspace), worktree=str(self.workspace),

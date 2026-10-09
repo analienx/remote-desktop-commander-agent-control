@@ -33,6 +33,42 @@ function fixture() {
 }
 const envelope = wt => 'runner:exec --project-id home-assistant --stream-id zigbee-coordinator-migration --repository analienx/home-assistant-stack --worktree "' + wt + '" -- ';
 
+test('worktree-only context and PowerShell location preserve foreign helper arguments', async () => {
+  const f = fixture();
+  try {
+    const command = 'python "C:\\Workspace\\repos\\config\\helper.py" --issue analienx/other#73';
+    for (const [prefix, shell] of [
+      ['runner:cwd "' + f.worktree + '" -- ', 'cmd.exe'],
+      ['Set-Location -LiteralPath "' + f.worktree + '"; ', 'powershell.exe'],
+      ["cd '" + f.worktree + "' && ", 'pwsh.exe'],
+    ]) {
+      const routed = await routeAnalienxRunner({ command: prefix + command, shell }, shell);
+      const req = JSON.parse(fs.readFileSync(routed.requestPath, 'utf8'));
+      assert.equal(req.cwd, f.worktree);
+      assert.equal(req.command, command);
+      assert.equal(req.execution, undefined); // Canonical bridge derives owner.
+    }
+    const next = await routeAnalienxRunner({command:'echo second-session', shell:'cmd.exe'}, 'cmd.exe');
+    assert.equal(JSON.parse(fs.readFileSync(next.requestPath)).cwd, f.workspace);
+  } finally { f.close(); }
+});
+
+test('invalid worktree-only contexts and internal bridge invocation fail closed', async () => {
+  const f = fixture();
+  try {
+    for (const command of [
+      'runner:cwd "D:\\Elsewhere" -- echo bad',
+      'runner:cwd "' + f.workspace + '/missing" -- echo bad',
+      'runner:cwd "' + f.worktree + '" echo bad',
+      'runner:cwd "' + f.worktree + '" -- runner:cwd "' + f.worktree + '" -- echo bad',
+      'runner:cwd "' + f.worktree + '" -- python rdc_runner_bridge.py --request x.json',
+    ]) {
+      await assert.rejects(routeAnalienxRunner({command, shell:'cmd.exe'}, 'cmd.exe'),
+        /ANALIENX_RDC_(CONTEXT_INVALID|RUNNER_REQUIRED)/);
+    }
+  } finally { f.close(); }
+});
+
 test('inline identity is stripped from the shell and encoded as v2 execution identity', async () => {
   const f = fixture();
   try {
