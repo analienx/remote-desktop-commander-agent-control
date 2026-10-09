@@ -50,6 +50,13 @@ test('worktree-only context and PowerShell location preserve foreign helper argu
     }
     const next = await routeAnalienxRunner({command:'echo second-session', shell:'cmd.exe'}, 'cmd.exe');
     assert.equal(JSON.parse(fs.readFileSync(next.requestPath)).cwd, f.workspace);
+    const wrapped = await routeAnalienxRunner({
+      command: 'cmd /c "cd /d ' + f.worktree + ' && git status --short"',
+      shell: 'powershell.exe',
+    }, 'powershell.exe');
+    const req = JSON.parse(fs.readFileSync(wrapped.requestPath));
+    assert.equal(req.cwd, f.worktree);
+    assert.equal(req.command, 'cmd.exe /c "git status --short"');
   } finally { f.close(); }
 });
 

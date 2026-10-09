@@ -223,6 +223,15 @@ function insideWorkspace(candidate) {
 
 export function splitCmdWorkingDirectory(command, shell) {
   const base = path.win32.basename(shell || '').toLowerCase();
+  // Common remote clients wrap a CMD directory declaration in PowerShell.
+  // Keep the CMD wrapper on the remainder; only lift its leading cwd.
+  const wrapper = command.match(/^[ \t]*cmd(?:\.exe)?[ \t]+\/c[ \t]+"(cd[ \t]+\/d[ \t]+[\s\S]+)"[ \t]*$/i);
+  if (wrapper && ['cmd', 'cmd.exe', 'powershell', 'powershell.exe', 'pwsh', 'pwsh.exe'].includes(base)) {
+    const inner = splitCmdWorkingDirectory(wrapper[1], 'cmd.exe');
+    if (inner.command !== wrapper[1]) {
+      return { cwd: inner.cwd, command: 'cmd.exe /c "' + inner.command + '"' };
+    }
+  }
   const context = command.match(/^runner:cwd[ \t]+"([^"\r\n]+)"[ \t]+--[ \t]+([^\r\n][\s\S]*)$/);
   if (/^\s*runner:cwd\b/i.test(command) && !context) {
     throw new Error('ANALIENX_RDC_CONTEXT_INVALID: expected runner:cwd "C:\\Workspace\\worktrees\\name" -- COMMAND');
