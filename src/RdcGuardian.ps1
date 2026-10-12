@@ -10,14 +10,15 @@ $ErrorActionPreference = 'SilentlyContinue'
 # ---------- config ----------
 $dcDir     = Join-Path $env:LOCALAPPDATA 'RDC-Agent'
 $guardLog  = Join-Path $dcDir 'guardian.log'
-$outLog    = Join-Path $dcDir 'remote-output.log'
+$outLog    = Join-Path $dcDir ('remote-output-' + (Get-Content -LiteralPath (Join-Path $PSScriptRoot 'rdc-active-install.json') -Raw | ConvertFrom-Json).installation_id + '.log')
 $stateFile = Join-Path $dcDir 'guardian-state.json'
 $report    = Join-Path $dcDir 'guardian-status.json'
 $starter   = Join-Path $PSScriptRoot 'RdcAgentStart.ps1'
 $notify    = Join-Path $PSScriptRoot 'RdcNotify.ps1'
-$pkgIndex  = Join-Path $env:APPDATA 'npm\node_modules\@wonderwhy-er\desktop-commander\dist\index.js'
+$activeCfg = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'rdc-active-install.json') -Raw | ConvertFrom-Json
+$pkgIndex  = Join-Path $activeCfg.package_root 'dist\index.js'
 $slRunner   = Join-Path $env:LOCALAPPDATA 'Analienx\SLRunner\slrunner.py'
-$runnerHook = Join-Path $PSScriptRoot 'rdc_runner_hook.py'
+$runnerHook = Join-Path $PSScriptRoot 'rdc_active_hook.py'
 $relayHost = 'mcp.desktopcommander.app'
 $restartCooldownMin = 10
 $bootGraceSec       = 120
@@ -56,13 +57,15 @@ function Try-Restart([string]$reason) {
         return $false
     }
     Write-Log ("RESTART: " + $reason)
-    foreach ($p in (Get-Process -Name node)) {
-        $c = (Get-CimInstance Win32_Process -Filter ("ProcessId = {0}" -f $p.Id)).CommandLine
-        if ($c -match 'desktop-commander') { Stop-Process -Id $p.Id -Force }
+    foreach ($p in @(Get-CimInstance Win32_Process -Filter "Name = 'node.exe'" -ErrorAction Stop)) {
+        if ($p.CommandLine -match [regex]::Escape($pkgIndex)) {
+            Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue
+        }
     }
-    foreach ($p in (Get-Process -Name cmd)) {
-        $c = (Get-CimInstance Win32_Process -Filter ("ProcessId = {0}" -f $p.Id)).CommandLine
-        if ($c -match 'desktop-commander remote') { Stop-Process -Id $p.Id -Force }
+    foreach ($p in @(Get-CimInstance Win32_Process -Filter "Name = 'cmd.exe'" -ErrorAction SilentlyContinue)) {
+        if ($p.CommandLine -match '(?i)\s/k\s' -and $p.CommandLine -match 'desktop-commander remote') {
+            Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue
+        }
     }
     Start-Sleep -Seconds 3
     Invoke-RdcHidden -File 'powershell.exe' -Arguments @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"' + $starter + '"')) | Out-Null
@@ -138,22 +141,28 @@ if (Test-Path -LiteralPath $slRunner -PathType Leaf) {
 
 # ---------- 2. process (dedup + presence) ----------
 function Get-Agents {
+    # One CIM enumeration; querying each PID individually made checks slow with
+    # dozens of Node-based tools running on this workstation.
     $found = @()
-    foreach ($p in (Get-Process -Name node)) {
-        $c = (Get-CimInstance Win32_Process -Filter ("ProcessId = {0}" -f $p.Id)).CommandLine
-        if ($c -match 'desktop-commander' -and $c -match '\sremote\b') { $found += $p }
+    $nodes = @(Get-CimInstance Win32_Process -Filter "Name = 'node.exe'" -ErrorAction Stop)
+    foreach ($n in $nodes) {
+        $c = $n.CommandLine
+        if ($c -match [regex]::Escape($pkgIndex) -and $c -match '\sremote\b') {
+            $p = Get-Process -Id $n.ProcessId -ErrorAction SilentlyContinue
+            if ($p) { $found += $p }
+        }
     }
-    return @($found)
+    return @($found | Sort-Object StartTime)
 }
 
-$agents = Get-Agents
+$agents = @(Get-Agents)
 if ($agents.Count -gt 1) {
     Write-Log ("DEDUP: " + $agents.Count + " agents found - keeping newest")
     foreach ($old in ($agents | Select-Object -First ($agents.Count - 1))) {
         Stop-Process -Id $old.Id -Force
         Write-Log ("  killed duplicate PID " + $old.Id)
     }
-    $agents = Get-Agents
+    $agents = @(Get-Agents)
 }
 
 if ($agents.Count -eq 0) {
