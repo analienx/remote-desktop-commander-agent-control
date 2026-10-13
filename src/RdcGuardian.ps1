@@ -190,9 +190,20 @@ $uptimeMin = ((Get-Date) - $agent.StartTime).TotalMinutes
 # Authentication waiting is actionable, not a process-health failure. Detect it
 # before connection recovery so a transient socket loss cannot rotate the code.
 $ready = $false; $pairingNeeded = $false
+$transportUnreachable = $false
 if (Test-Path -LiteralPath $outLog) {
-    $ready = Select-String -LiteralPath $outLog -Pattern 'Device ready' -Quiet
-    $pairingNeeded = Select-String -LiteralPath $outLog -Pattern 'Verify your device|Verify Device|pairing code|Starting device authorization flow|Waiting for authorization|Please complete authentication|Persisted session invalid|Invalid Refresh Token' -Quiet
+    # Current ordered evidence, rather than any historical startup success.
+    foreach ($line in @(Get-Content -LiteralPath $outLog -Tail 2000)) {
+        if ($line -match '^(?:\S+\s+)?Starting MCP Device') {
+            $ready = $false; $pairingNeeded = $false; $transportUnreachable = $false
+        } elseif ($line -match '^(?:\S+\s+)?Device marked as offline$|^\[DEBUG\] Device status set to offline$|^(?:\S+\s+)?Device registered, but NOT reachable') {
+            $ready = $false; $pairingNeeded = $false; $transportUnreachable = $true
+        } elseif ($line -match '^(?:\S+\s+)?Device ready(?::|$)|^(?:\S+\s+)?Presence tracked \(device .+ visible as online\)$|^\[DEBUG\] Device status set to online$|^(?:\S+\s+)?Device marked as online$') {
+            $ready = $true; $pairingNeeded = $false; $transportUnreachable = $false
+        } elseif ($line -match 'Verify your device|Verify Device|pairing code|Starting device authorization flow|Waiting for authorization|Please complete authentication|Persisted session invalid|Invalid Refresh Token') {
+            $ready = $false; $pairingNeeded = $true; $transportUnreachable = $false
+        }
+    }
 }
 if ($pairingNeeded -and -not $ready) {
     $notifyNeeded = $state.LastStatus -ne 'NEEDS-USER-VERIFICATION'
@@ -202,6 +213,13 @@ if ($pairingNeeded -and -not $ready) {
         Invoke-RdcHidden -File 'powershell.exe' -Arguments @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"' + $notify + '"'), '-Title', '"RDC Agent"', '-Message', '"Device verification needed - open Agent Status; restart alone cannot authenticate"') | Out-Null
     }
     exit 4
+}
+if ($transportUnreachable) {
+    # Keep the runtime's channel recovery alive; restarting a connected process
+    # cannot repair a failed provider-side acknowledgement.
+    Save-State 'TRANSPORT-UNREACHABLE'
+    Write-Log ("TRANSPORT-UNREACHABLE agent PID " + $agent.Id + '; channel/Presence has not acknowledged reachability')
+    exit 2
 }
 
 if (-not $conns) {
@@ -228,13 +246,8 @@ if ($uptimeMin -lt ($bootGraceSec / 60)) {
     Write-Log "agent connected, still booting - grace"
     Save-State 'BOOTING'; exit 0
 }
-$state.ConsecutiveFailures++
-if ($state.ConsecutiveFailures -ge 3) {
-    Write-Log ('UNRECOVERABLE after ' + $state.ConsecutiveFailures + ' failures - manual inspection needed')
-    Invoke-RdcHidden -File 'powershell.exe' -Arguments @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"' + $notify + '"'), '-Title', '"RDC Agent"', '-Message', '"Automatic recovery failed - open Agent Status for details"') | Out-Null
-    Save-State 'UNRECOVERABLE'; exit 5
-}
-if (Try-Restart ("agent connected but not ready (" + [math]::Round($uptimeMin,1) + " min uptime, log lacks Device ready)")) {
-    Save-State 'RESTARTED-NOT-READY'; exit 2
-}
-Save-State 'UNHEALTHY-COOLDOWN'; exit 2
+# Verbose tool output may push the last channel transition outside the bounded
+# tail. Unknown reachability is not justification to terminate a live agent.
+Save-State 'CONNECTED-REACHABILITY-UNKNOWN'
+Write-Log ("CONNECTED-REACHABILITY-UNKNOWN agent PID " + $agent.Id + '; verify connector ping and command receipt')
+exit 2

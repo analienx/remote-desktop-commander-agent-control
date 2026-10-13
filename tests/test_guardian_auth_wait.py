@@ -60,6 +60,26 @@ $notify = 'unused'
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("STATE:OK", result.stdout)
 
+    def test_old_ready_cannot_hide_later_offline_signal(self):
+        result = self.run_guardian("Device ready\n[DEBUG] Device status set to offline\nChannel subscribed", connected=True)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("STATE:TRANSPORT-UNREACHABLE", result.stdout)
+
+    def test_presence_recovery_supersedes_offline_without_restart(self):
+        result = self.run_guardian("Device ready\n[DEBUG] Device status set to offline\n[DEBUG] Device status set to online", connected=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("STATE:OK", result.stdout)
+
+    def test_connected_socket_without_reachability_is_unknown(self):
+        result = self.run_guardian("Channel subscribed", connected=True)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("STATE:CONNECTED-REACHABILITY-UNKNOWN", result.stdout)
+
+    def test_new_generation_does_not_inherit_ready(self):
+        result = self.run_guardian("Device ready\nStarting MCP Device", connected=True)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("STATE:CONNECTED-REACHABILITY-UNKNOWN", result.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()
