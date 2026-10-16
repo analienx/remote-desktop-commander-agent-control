@@ -1,0 +1,31 @@
+name: Published RDC runtime
+on:
+  pull_request:
+  workflow_dispatch:
+jobs:
+  published-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Prepare exact published runtime
+        shell: pwsh
+        run: |
+          npm install --prefix C:\rdc --save-exact --ignore-scripts --no-audit --no-fund @wonderwhy-er/desktop-commander@0.3.0
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python tests/check_published_runtime.py C:\rdc
+      - name: Package verified Windows runtime
+        shell: pwsh
+        run: |
+          tar -czf rdc-0.3.0-windows.tgz -C C:\rdc node_modules package.json package-lock.json
+          Get-FileHash rdc-0.3.0-windows.tgz -Algorithm SHA256 | Format-List
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rdc-0.3.0-windows
+          path: rdc-0.3.0-windows.tgz
+          retention-days: 14
