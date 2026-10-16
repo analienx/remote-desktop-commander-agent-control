@@ -8,6 +8,11 @@ import sys
 
 root = Path(sys.argv[1]).resolve()
 package = root / "node_modules/@wonderwhy-er/desktop-commander"
+patched_files = [package / "dist" / relative for relative in (
+    "tools/improved-process-tools.js", "tools/schemas.js", "tools/edit.js",
+    "tools/process.js", "handlers/filesystem-handlers.js",
+)]
+originals = {p:p.read_bytes() for p in patched_files}
 lock = json.loads((root / "package-lock.json").read_text())
 entry = lock["packages"]["node_modules/@wonderwhy-er/desktop-commander"]
 assert entry["version"] == "0.3.0"
@@ -32,3 +37,8 @@ for filename in ("improved-process-tools.js","schemas.js","analienx-runner-polic
     subprocess.run(["node","--check",str(package / "dist/tools" / filename)],check=True)
 subprocess.run(["node","--check",str(package / "dist/handlers/filesystem-handlers.js")],check=True)
 print(json.dumps({"published_version":"0.3.0","routing_and_write_audit_healthy":True,"idempotent":True}))
+# Ship the original distribution. Production installs generate their own
+# content-addressed hook backups at their real destination, never CI paths.
+for p,data in originals.items(): p.write_bytes(data)
+for filename in ("analienx-runner-policy.js","analienx-write-audit.js"):
+    (package / "dist/tools" / filename).unlink()
