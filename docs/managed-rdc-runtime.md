@@ -1,56 +1,74 @@
 # Managed RDC runtime (Windows)
 
-The canonical Desktop Commander package is pinned to **0.2.52** under:
+The accepted runtime is pinned to **0.3.0** under:
 
-    %LOCALAPPDATA%\RDC-Control\managed\desktop-commander-0.2.52\node_modules\@wonderwhy-er\desktop-commander
+    %LOCALAPPDATA%\RDC-Control\managed\desktop-commander-0.3.0\node_modules\@wonderwhy-er\desktop-commander
 
-Never use an ephemeral npm _npx cache as the permanent launcher. The active
-pointer lives in %LOCALAPPDATA%\RDC-Control\rdc-active-install.json and includes
-schema=1, the exact package_root, version=0.2.52, and installation_id=managed-0.2.52.
+The active pointer is %LOCALAPPDATA%\RDC-Control\rdc-active-install.json:
+schema=1, exact package_root, version=0.3.0, installation_id=managed-0.3.0.
+The prior managed **0.2.52** installation is retained for rollback.
+Ephemeral npm _npx directories are not permanent launchers.
 
-The source-controlled rdc_active_hook.py validates exact package location,
-package name/version, and the lockfile; it invokes the existing Runner process
-hook and native write-audit hook against that exact installation. Hook state and
-backups are scoped by installation_id. The agent starter refuses an unpatched
-or invalid runtime. Guardian watches only agents from the canonical package,
-uses a single process enumeration, and has version-scoped agent output logs.
+rdc_active_hook.py validates package location, name/version and lockfile, then
+checks process routing and native-write auditing for that exact installation.
+Hook state and backups are scoped by installation ID. Starter and Guardian use
+the active package and its versioned output log.
 
-## Deploy or upgrade safely
+## Prepare and deploy safely
 
-1. Install an exact package version into a NEW managed directory, retaining
-   package-lock.json. Example (from cmd.exe):
+1. Resolve the stable npm release and integrity. Use the **Published RDC runtime**
+   GitHub-hosted Windows workflow to validate the exact package: hook installation,
+   idempotence, a real MCP handshake, request routing, native write/edit auditing
+   and termination of a CI-owned process. Download the successful exact-commit
+   artifact and compare its SHA256 with the hosted log. Do not build or package
+   this public repository on the managed workstation.
+2. Use the named private helper in analienx/config:
+   supervisor/safety/upgrade_managed_rdc.py. Its version-specific source/archive
+   pins must match the hosted candidate. Each operation requires an expiring
+   immutable plan and exact plan hash. Raw copies into AppData or an unreviewed
+   package install are not the deployment boundary.
+3. The stage operation extracts into a NEW managed directory, validates archive
+   paths/types, preserves control/configuration files, installs verified control
+   sources, and checks the candidate's routing and audit hooks. The active
+   pointer and running agent remain unchanged.
+4. Finish or safely cancel active RDC process sessions before cutover. A hidden
+   demand-only task runs the verified worker outside RDC's kill-on-close Job
+   Object. It rejects active commands, validates process creation times,
+   atomically switches the pointer, stops the old MCP child before its parent,
+   and starts the candidate. Authentication state is preserved.
+5. Verify the connector reports the new version **Online**, returns pong and
+   executes a worktree-bound read-only command through TaskRouter and SLRunner.
+   Require rdc_active_hook.py status to report both hook layers healthy.
+   An incorrect project/worktree identity must remain rejected.
+6. Confirm the next Guardian check preserves the new agent. Retain the previous
+   installation, configuration backup and receipts. The rollback operation
+   creates a fresh plan against the current exact processes; never replay an
+   expired cutover plan.
 
-       npm install --prefix "%LOCALAPPDATA%\RDC-Control\managed\desktop-commander-0.2.52" --save-exact --ignore-scripts --no-audit --no-fund @wonderwhy-er/desktop-commander@0.2.52
+## Accepted 0.3.0 candidate
 
-2. Copy these source-controlled files to %LOCALAPPDATA%\RDC-Control:
-   rdc_active_hook.py, rdc_runner_hook.py, rdc_write_audit_hook.py,
-   analienx-runner-policy.js, and analienx-write-audit.js.
-3. Write rdc-active-install.candidate.json under RDC-Control containing the
-   new exact package_root, matching semantic version and installation_id.
-   Run Python rdc_active_hook.py package, ensure, and status with
-   --config <candidate path>. Require healthy=true for the process hook and
-   native-write audit and check the resolved package version/path.
-4. Preserve the prior active config in content-addressed backups. Atomically
-   replace rdc-active-install.json with the verified candidate only after
-   preflight. Never modify the package while it is running.
-5. Start the pinned agent with RdcAgentStart.ps1 (or scheduled Guardian).
-   Independently verify the live worker process path, relay readiness and
-   a read-only runner:exec -> TaskRouter -> SLRunner command.
-6. Retire older remote agents only after the pinned agent is actually live,
-   using verified process identities, not blanket termination of node.exe.
-   Keep rollback files until the cutover survives another Guardian check.
+Public source: b862da8e12e337fd7dec19ec3eca50854354cb36 (PR13).
+Hosted run: 38888315208. Runtime archive SHA256:
 
-For future upgrades review the upstream package against signature-anchored
-hook tests before activation. The Guardian status checker must validate the
-ACTIVE installation, not merely the presence of a patched old package.
+    4c880b033efdca682f428dfc45d19be2a66d74a09592b68d7b9fb8ba825f3757
+
+Private deployment and rollback receipts:
+
+    C:\Workspace\.analienx\rdc-upgrade-0.3.0
+
+The hidden task RDC-Upgrade-0.3.0-2ce47952 performed the cutover. It has no
+recurring trigger. Guardian continues its existing scheduled checks.
 
 ## Troubleshooting
 
-Check %LOCALAPPDATA%\RDC-Agent\guardian-status.json, guardian.log, and
-remote-output-managed-0.2.52.log. Run:
+Inspect %LOCALAPPDATA%\RDC-Agent\guardian-status.json, guardian.log, and
+remote-output-managed-0.3.0.log / .err.log. Verify:
 
     python "%LOCALAPPDATA%\RDC-Control\rdc_active_hook.py" status
 
-An old npx cache is permitted only as a previously approved fallback, not
-an automatic alternative. Do not restart unrelated processes or flash Zigbee
-hardware as part of RDC recovery.
+An old Device ready line or an established socket does not prove current remote
+reachability. Guardian distinguishes channel failure and unknown reachability;
+connector ping and a real command receipt provide live acceptance.
+Preserve session identity and private diagnostics during transport investigation.
+Do not restart unrelated processes or issue device recovery commands as part of
+RDC maintenance.
