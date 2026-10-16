@@ -255,11 +255,12 @@ def _patched_control_audit(original: str) -> str:
         "    const nativeAudit = beginNativeControl('process_input', { pid, input });",
         "interact audit begin",
     )
+    node_call = "executeNodeCode(input, effectiveTimeout, pid)" if "return executeNodeCode(input, effectiveTimeout, pid);" in source else "executeNodeCode(input, effectiveTimeout)"
     source = _replace_once(
         source,
-        "        return executeNodeCode(input, effectiveTimeout);",
+        "        return " + node_call + ";",
         "        try {\n"
-        "            const result = await executeNodeCode(input, effectiveTimeout);\n"
+        "            const result = await " + node_call + ";\n"
         "            finishNativeControl(nativeAudit);\n"
         "            return result;\n"
         "        }\n"
@@ -322,6 +323,21 @@ def _patched_control_audit(original: str) -> str:
         "        return {",
         "virtual terminate audit",
     )
+    if "    const outcome = await terminalManager.forceTerminate(pid);" in source:
+        return _replace_once(
+            source,
+            "    const outcome = await terminalManager.forceTerminate(pid);",
+            "    let outcome;\n"
+            "    try {\n"
+            "        outcome = await terminalManager.forceTerminate(pid);\n"
+            "        if (outcome === 'terminated') finishNativeControl(nativeAudit);\n"
+            "        else failNativeControl(nativeAudit, new Error(outcome));\n"
+            "    } catch (error) {\n"
+            "        failNativeControl(nativeAudit, error);\n"
+            "        throw error;\n"
+            "    }",
+            "async force terminate completion audit",
+        )
     source = _replace_once(
         source,
         "    const success = terminalManager.forceTerminate(pid);\n    return {",
