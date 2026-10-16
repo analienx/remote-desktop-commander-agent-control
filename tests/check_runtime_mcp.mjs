@@ -2,6 +2,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import {spawn} from 'node:child_process';
 import {Client} from '@modelcontextprotocol/sdk/client/index.js';
 import {StdioClientTransport} from '@modelcontextprotocol/sdk/client/stdio.js';
 
@@ -45,5 +46,15 @@ try {
   const events=fs.readFileSync(path.join(root,'audit.jsonl'),'utf8').trim().split('\n').map(JSON.parse);
   assert(events.some(e=>e.operation==='write_file'&&e.phase==='received'));
   assert(events.some(e=>e.operation==='write_file'&&e.phase==='succeeded'));
+  const edited=await client.callTool({name:'edit_block',arguments:{file_path:path.join(worktree,'audit-probe.txt'),old_string:'hosted audit proof',new_string:'edited audit proof'}});
+  assert.notEqual(edited.isError,true,JSON.stringify(edited));
+  const owned=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});
+  try {
+    const killed=await client.callTool({name:'kill_process',arguments:{pid:owned.pid}});
+    assert.notEqual(killed.isError,true,JSON.stringify(killed));
+    const control=fs.readFileSync(path.join(root,'audit.jsonl'),'utf8').trim().split('\n').map(JSON.parse);
+    assert(control.some(e=>e.operation==='edit_block'&&e.phase==='succeeded'));
+    assert(control.some(e=>e.operation==='process_terminate'&&e.phase==='succeeded'&&e.pid===owned.pid));
+  } finally { owned.kill(); }
   console.log('MCP_HANDSHAKE_ROUTING_AND_NATIVE_WRITE_AUDIT_PASS');
 } finally { await client.close(); }
