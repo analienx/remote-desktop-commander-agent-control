@@ -36,6 +36,9 @@ assert hook.ensure()["changed"] is False, "install must be idempotent"
 for filename in ("improved-process-tools.js","schemas.js","analienx-runner-policy.js","analienx-write-audit.js","edit.js","process.js"):
     subprocess.run(["node","--check",str(package / "dist/tools" / filename)],check=True)
 subprocess.run(["node","--check",str(package / "dist/handlers/filesystem-handlers.js")],check=True)
+probe = root / "probe.mjs"
+shutil.copyfile(Path(__file__).with_name("check_runtime_mcp.mjs"),probe)
+subprocess.run(["node",str(probe)],check=True,timeout=90)
 print(json.dumps({"published_version":"0.3.0","routing_and_write_audit_healthy":True,"idempotent":True}))
 # Ship the original distribution. Production installs generate their own
 # content-addressed hook backups at their real destination, never CI paths.
