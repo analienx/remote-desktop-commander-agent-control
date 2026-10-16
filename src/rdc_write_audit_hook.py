@@ -171,14 +171,15 @@ def _patch_edit(source: str) -> str:
         "        }\n        catch (error) {\n            failNativeWrite(nativeAudit, error);\n            throw error;\n        }",
         "plain text edit mutation",
     )
+    range_assignment = "const result = " if "const result = await handler.editRange(validatedPath, parsed.range, content, parsed.options);" in source else ""
+    range_finish = ("\n                if (result.success) finishNativeWrite(nativeAudit);\n                else failNativeWrite(nativeAudit, new Error('range edit rejected'));" if range_assignment else "\n                finishNativeWrite(nativeAudit);")
     source = _replace_once(
         source,
-        "        if (hasEditRange) {\n            try {\n                // parsed.range is guaranteed non-empty string by hasRange check above\n                await handler.editRange(validatedPath, parsed.range, content, parsed.options);",
+        "        if (hasEditRange) {\n            try {\n                // parsed.range is guaranteed non-empty string by hasRange check above\n                " + range_assignment + "await handler.editRange(validatedPath, parsed.range, content, parsed.options);",
         "        if (hasEditRange) {\n            let nativeAudit = null;\n            try {\n"
         "                // parsed.range is guaranteed non-empty string by hasRange check above\n"
         "                nativeAudit = beginNativeWrite('edit_block', [resolveAbsolutePath(parsed.file_path)]);\n"
-        "                await handler.editRange(validatedPath, parsed.range, content, parsed.options);\n"
-        "                finishNativeWrite(nativeAudit);",
+        "                " + range_assignment + "await handler.editRange(validatedPath, parsed.range, content, parsed.options);" + range_finish,
         "range edit mutation",
     )
 
@@ -210,14 +211,18 @@ def _patch_edit(source: str) -> str:
         "                const resolvedEditRangePath = resolveAbsolutePath(parsed.file_path);",
         "structured text edit success",
     )
-    source = _replace_once(
-        source,
-        "            const errorMsg = result.errors?.map(e => e.error).join('; ') || 'Unknown error';\n            return createErrorResponse(errorMsg);",
-        "            const errorMsg = result.errors?.map(e => e.error).join('; ') || 'Unknown error';\n"
-        "            failNativeWrite(nativeAudit, new Error(errorMsg));\n"
-        "            return createErrorResponse(errorMsg);",
-        "structured text edit rejection",
-    )
+    old_rejection = "            const errorMsg = result.errors?.map(e => e.error).join('; ') || 'Unknown error';\n            return createErrorResponse(errorMsg);"
+    if old_rejection in source:
+        source = _replace_once(source, old_rejection,
+            "            const errorMsg = result.errors?.map(e => e.error).join('; ') || 'Unknown error';\n"
+            "            failNativeWrite(nativeAudit, new Error(errorMsg));\n"
+            "            return createErrorResponse(errorMsg);", "structured text edit rejection")
+    else:
+        source = _replace_once(source,
+            "            return createErrorResponse(editFailure(result));\n        }\n        catch (error) {",
+            "            failNativeWrite(nativeAudit, new Error(editFailure(result)));\n"
+            "            return createErrorResponse(editFailure(result));\n        }\n        catch (error) {",
+            "structured text edit rejection")
 
     source = _replace_once(
         source,
