@@ -129,14 +129,15 @@ def _patch_filesystem(source: str) -> str:
         "        return createErrorResponse(errorMessage);\n    }\n}\n/**\n * Format a value for display",
         "move_file catch",
     )
+    pdf_assignment = "const ignoredOptions = " if "const ignoredOptions = await writePdf(" in source else ""
     source = _replace_once(
         source,
-        "export async function handleWritePdf(args) {\n    try {\n        const parsed = WritePdfArgsSchema.parse(args);\n        await writePdf(parsed.path, parsed.content, parsed.outputPath, parsed.options);\n        const targetPath = parsed.outputPath || parsed.path;",
+        "export async function handleWritePdf(args) {\n    try {\n        const parsed = WritePdfArgsSchema.parse(args);\n        " + pdf_assignment + "await writePdf(parsed.path, parsed.content, parsed.outputPath, parsed.options);\n        const targetPath = parsed.outputPath || parsed.path;",
         "export async function handleWritePdf(args) {\n    let nativeAudit = null;\n    try {\n"
         "        const parsed = WritePdfArgsSchema.parse(args);\n"
         "        const targetPath = parsed.outputPath || parsed.path;\n"
         "        nativeAudit = beginNativeWrite('write_pdf', [resolveAbsolutePath(targetPath)]);\n"
-        "        await writePdf(parsed.path, parsed.content, parsed.outputPath, parsed.options);\n"
+        "        " + pdf_assignment + "await writePdf(parsed.path, parsed.content, parsed.outputPath, parsed.options);\n"
         "        finishNativeWrite(nativeAudit);",
         "write_pdf mutation",
     )
@@ -287,6 +288,10 @@ def _patch_process(source: str) -> str:
         };
     }
 }"""
+    if "await terminatePid(parsed.data.pid);" in source:
+        statement = "        // Returns once the process is gone, so a success means it no longer runs\n        await terminatePid(parsed.data.pid);"
+        old = old.replace("        process.kill(parsed.data.pid);", statement)
+        new = new.replace("        process.kill(parsed.data.pid);", statement)
     return _replace_once(source, old, new, "kill_process function")
 
 
